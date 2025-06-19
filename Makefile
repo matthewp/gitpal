@@ -1,4 +1,4 @@
-# Makefile for git-thing CLI tool
+# Makefile for gitpal CLI tool
 
 # Compiler and flags
 FPC = fpc
@@ -20,7 +20,7 @@ UNIT_PATHS = -Fu$(VENDOR_DIR)/bobaui -Fu$(VENDOR_DIR)/models.pas
 MAIN_SRC = $(SRC_DIR)/app.pas
 
 # Output binary
-TARGET = $(BIN_DIR)/git-thing
+TARGET = $(BIN_DIR)/gitpal
 
 # Default target
 all: $(TARGET)
