@@ -22,8 +22,7 @@ type
     FCommitMessage: string;
   public
     constructor Create; overload;
-    constructor Create(AWidth, AHeight: integer); overload;
-    constructor Create(AWidth, AHeight: integer; const ACommitMessage: string); overload;
+    constructor Create(const ACommitMessage: string); overload;
     destructor Destroy; override;
     function View: string; override;
     function Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult; override;
@@ -32,8 +31,8 @@ type
 constructor TCommitModel.Create;
 begin
   inherited Create;
-  FTerminalWidth := 80;
-  FTerminalHeight := 24;
+  FTerminalWidth := 0;  // Will be set by WindowSizeMsg
+  FTerminalHeight := 0; // Will be set by WindowSizeMsg
   FCommitMessage := AnsiString('');
   
   FList := bobacomponents.TList.Create;
@@ -44,26 +43,11 @@ begin
   FList.ShowBorder := false;
 end;
 
-constructor TCommitModel.Create(AWidth, AHeight: integer);
+constructor TCommitModel.Create(const ACommitMessage: string);
 begin
   inherited Create;
-  FTerminalWidth := AWidth;
-  FTerminalHeight := AHeight;
-  FCommitMessage := AnsiString('');
-  
-  FList := bobacomponents.TList.Create;
-  FList.AddItem(AnsiString('Accept'));
-  FList.AddItem(AnsiString('Decline'));
-  FList.Width := 30;
-  FList.Height := 5;
-  FList.ShowBorder := false;
-end;
-
-constructor TCommitModel.Create(AWidth, AHeight: integer; const ACommitMessage: string);
-begin
-  inherited Create;
-  FTerminalWidth := AWidth;
-  FTerminalHeight := AHeight;
+  FTerminalWidth := 0;  // Will be set by WindowSizeMsg
+  FTerminalHeight := 0; // Will be set by WindowSizeMsg
   FCommitMessage := ACommitMessage;
   
   FList := bobacomponents.TList.Create;
@@ -73,6 +57,7 @@ begin
   FList.Height := 5;
   FList.ShowBorder := false;
 end;
+
 
 destructor TCommitModel.Destroy;
 begin
@@ -88,6 +73,13 @@ var
   PaddedContent: string;
   Sections: array of string;
 begin
+  // Handle initial state gracefully when terminal size is unknown
+  if FTerminalWidth <= 0 then
+  begin
+    Result := AnsiString('Detecting terminal size...');
+    Exit;
+  end;
+  
   // Add padding to the content (space before and after)
   PaddedContent := AnsiString(' ') + FCommitMessage + AnsiString(' ');
   
@@ -139,7 +131,9 @@ begin
       NewList := FList.Update(Msg);
       if NewList <> FList then
       begin
-        NewModel := TCommitModel.Create(FTerminalWidth, FTerminalHeight, FCommitMessage);
+        NewModel := TCommitModel.Create(FCommitMessage);
+        NewModel.FTerminalWidth := FTerminalWidth;
+        NewModel.FTerminalHeight := FTerminalHeight;
         NewModel.FList.Free;
         NewModel.FList := NewList;
         
@@ -174,12 +168,9 @@ begin
   else if Msg is bobaui.TWindowSizeMsg then
   begin
     WindowMsg := bobaui.TWindowSizeMsg(Msg);
-    if (WindowMsg.Width <> FTerminalWidth) or (WindowMsg.Height <> FTerminalHeight) then
-    begin
-      NewModel := TCommitModel.Create(WindowMsg.Width, WindowMsg.Height, FCommitMessage);
-      NewModel.FList.SelectedIndex := FList.SelectedIndex;
-      Result.Model := NewModel;
-    end;
+    // Always update dimensions without recreating model
+    FTerminalWidth := WindowMsg.Width;
+    FTerminalHeight := WindowMsg.Height;
   end;
 end;
 
@@ -369,7 +360,7 @@ begin
   end;
   
   // Create model with the generated commit message
-  Model := TCommitModel.Create(80, 24, CommitMessage);
+  Model := TCommitModel.Create(CommitMessage);
   Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);
   
   // Set global program reference
