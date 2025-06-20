@@ -11,7 +11,7 @@ uses
   SysUtils;
 
 type
-  TSelectModel = class(bobaui.TModel)
+  TCommitModel = class(bobaui.TModel)
   private
     FTerminalWidth, FTerminalHeight: integer;
     FList: bobacomponents.TList;
@@ -24,7 +24,7 @@ type
     function Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult; override;
   end;
 
-constructor TSelectModel.Create;
+constructor TCommitModel.Create;
 begin
   inherited Create;
   FTerminalWidth := 80;
@@ -39,7 +39,7 @@ begin
   FList.ShowBorder := false;
 end;
 
-constructor TSelectModel.Create(AWidth, AHeight: integer);
+constructor TCommitModel.Create(AWidth, AHeight: integer);
 begin
   inherited Create;
   FTerminalWidth := AWidth;
@@ -54,13 +54,13 @@ begin
   FList.ShowBorder := false;
 end;
 
-destructor TSelectModel.Destroy;
+destructor TCommitModel.Destroy;
 begin
   FList.Free;
   inherited Destroy;
 end;
 
-procedure TSelectModel.OnItemSelect(Index: integer; const Item: string);
+procedure TCommitModel.OnItemSelect(Index: integer; const Item: string);
 begin
   if Index = 0 then
     writeln('Accept selected')
@@ -68,16 +68,16 @@ begin
     writeln('Decline selected');
 end;
 
-function TSelectModel.View: string;
+function TCommitModel.View: string;
 begin
   Result := AnsiString('Commit changes?') + #10 + #10 + FList.View;
 end;
 
-function TSelectModel.Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult;
+function TCommitModel.Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult;
 var
   KeyMsg: bobaui.TKeyMsg;
   WindowMsg: bobaui.TWindowSizeMsg;
-  NewModel: TSelectModel;
+  NewModel: TCommitModel;
   NewList: bobacomponents.TList;
 begin
   Result.Model := Self;
@@ -104,7 +104,7 @@ begin
       NewList := FList.Update(Msg);
       if NewList <> FList then
       begin
-        NewModel := TSelectModel.Create(FTerminalWidth, FTerminalHeight);
+        NewModel := TCommitModel.Create(FTerminalWidth, FTerminalHeight);
         NewModel.FList.Free;
         NewModel.FList := NewList;
         Result.Model := NewModel;
@@ -116,19 +116,66 @@ begin
     WindowMsg := bobaui.TWindowSizeMsg(Msg);
     if (WindowMsg.Width <> FTerminalWidth) or (WindowMsg.Height <> FTerminalHeight) then
     begin
-      NewModel := TSelectModel.Create(WindowMsg.Width, WindowMsg.Height);
+      NewModel := TCommitModel.Create(WindowMsg.Width, WindowMsg.Height);
       NewModel.FList.SelectedIndex := FList.SelectedIndex;
       Result.Model := NewModel;
     end;
   end;
 end;
 
+procedure ShowHelp;
+begin
+  writeln('gitpal - AI-powered git assistant');
+  writeln('');
+  writeln('Usage:');
+  writeln('  gitpal [command]');
+  writeln('');
+  writeln('Available Commands:');
+  writeln('  commit       Generate and apply AI-powered commit messages');
+  writeln('  changelog    Update CHANGELOG.md with recent changes');
+  writeln('');
+  writeln('Options:');
+  writeln('  --help, -h   Show this help message');
+  writeln('');
+  writeln('Use "gitpal [command] --help" for more information about a command.');
+end;
+
+procedure ShowCommitHelp;
+begin
+  writeln('gitpal commit - Generate AI-powered commit messages');
+  writeln('');
+  writeln('Usage:');
+  writeln('  gitpal commit [options]');
+  writeln('');
+  writeln('Description:');
+  writeln('  Analyzes your git changes and generates a descriptive commit message');
+  writeln('  using AI. You can review and accept or decline the suggestion.');
+  writeln('');
+  writeln('Options:');
+  writeln('  --help, -h   Show this help message');
+end;
+
+procedure ShowChangelogHelp;
+begin
+  writeln('gitpal changelog - Update CHANGELOG.md file');
+  writeln('');
+  writeln('Usage:');
+  writeln('  gitpal changelog [options]');
+  writeln('');
+  writeln('Description:');
+  writeln('  Analyzes recent commits and updates your CHANGELOG.md file with');
+  writeln('  a summary of changes organized by type (features, fixes, etc.).');
+  writeln('');
+  writeln('Options:');
+  writeln('  --help, -h   Show this help message');
+end;
+
+procedure RunCommitCommand;
 var
   Prog: TBobaUIProgram;
-  Model: TSelectModel;
-  Display: bobaui.TDisplay;
+  Model: TCommitModel;
 begin
-  Model := TSelectModel.Create(80, 24);
+  Model := TCommitModel.Create(80, 24);
   Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);
   
   // Set global program reference
@@ -139,4 +186,64 @@ begin
   // Cleanup
   GlobalProgram := nil;
   Prog.Free;
+end;
+
+procedure RunChangelogCommand;
+begin
+  writeln('Changelog functionality coming soon...');
+end;
+
+var
+  Command: string;
+  i: integer;
+  ShowMainHelp: boolean;
+begin
+  ShowMainHelp := false;
+  Command := AnsiString('');
+  
+  // Parse command line arguments
+  if ParamCount = 0 then
+    ShowMainHelp := true
+  else
+  begin
+    for i := 1 to ParamCount do
+    begin
+      if (ParamStr(i) = '--help') or (ParamStr(i) = '-h') then
+      begin
+        if Command = AnsiString('') then
+          ShowMainHelp := true
+        else if Command = AnsiString('commit') then
+        begin
+          ShowCommitHelp;
+          Exit;
+        end
+        else if Command = AnsiString('changelog') then
+        begin
+          ShowChangelogHelp;
+          Exit;
+        end;
+      end
+      else if (Command = AnsiString('')) and (ParamStr(i)[1] <> '-') then
+        Command := AnsiString(ParamStr(i));
+    end;
+  end;
+  
+  // Show help or execute command
+  if ShowMainHelp then
+  begin
+    ShowHelp;
+    Exit;
+  end;
+  
+  if Command = AnsiString('commit') then
+    RunCommitCommand
+  else if Command = AnsiString('changelog') then
+    RunChangelogCommand
+  else
+  begin
+    writeln('Error: Unknown command "', Command, '"');
+    writeln('');
+    ShowHelp;
+    Halt(1);
+  end;
 end.
