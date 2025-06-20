@@ -12,6 +12,8 @@ uses
   SysUtils,
   Process;
 
+{$I gitpal-version.inc}
+
 type
   TCommitModel = class(bobaui.TModel)
   private
@@ -183,7 +185,8 @@ begin
   writeln('  changelog    Update CHANGELOG.md with recent changes');
   writeln('');
   writeln('Options:');
-  writeln('  --help, -h   Show this help message');
+  writeln('  --help, -h     Show this help message');
+  writeln('  --version, -v  Show version information');
   writeln('');
   writeln('Use "gitpal [command] --help" for more information about a command.');
 end;
@@ -406,6 +409,11 @@ begin
           ShowChangelogHelp;
           Exit;
         end;
+      end
+      else if (ParamStr(i) = '--version') or (ParamStr(i) = '-v') then
+      begin
+        writeln(AppVersion);
+        Exit;
       end
       else if ParamStr(i) = '--prompt' then
       begin

@@ -84,7 +84,7 @@ fpc -Fl/opt/homebrew/opt/openssl@1.1/lib -k-rpath -k/opt/homebrew/opt/openssl@1.
 ## Development Notes
 
 ### Project Structure
-- Main source files should be in project root (currently minimal setup)
+- Main program file: `src/app.pas` (CLI entry point with argument parsing and core functionality)
 - Vendor dependencies are in `vendor/` directory
 - Follow vendor library patterns for LLM integration and TUI components
 
