@@ -137,6 +137,98 @@ To run this, save it as `counter.pas` and compile with `fpc counter.pas && ./cou
 8.  The runtime replaces the old model with the new one, executes the command, and calls `View` again to render the changes.
 9.  This loop continues until a `QuitCmd` is received.
 
+## Messages vs Commands
+
+Understanding the distinction between **Messages** and **Commands** is crucial for writing effective BobaUI applications. This architecture is inspired by BubbleTea's Model-View-Update pattern.
+
+### Messages (`TMsg`)
+
+Messages represent **events** or **data** that flow through your application. They are:
+
+- **Data structures** that carry information about what happened
+- **Synchronous** - processed immediately in the `Update` function
+- **Can be any type** - built-in types like `TKeyMsg` or your custom classes
+- **The result** of some operation (user input, timer, completed I/O, etc.)
+
+```pascal
+// Examples of messages
+TKeyMsg        // User pressed a key
+TWindowSizeMsg // Terminal was resized  
+TTickMsg       // Timer tick occurred
+TCustomMsg     // Your custom event data
+```
+
+### Commands (`TCmd`)
+
+Commands are **functions** that perform I/O operations and eventually produce messages. They are:
+
+- **Functions** with signature `function: TMsg; cdecl`
+- **Asynchronous** - executed by the framework after `Update` returns
+- **For I/O operations only** - network requests, file operations, timers
+- **Producers of messages** - they return messages when complete
+
+```pascal
+// Examples of commands
+QuitCmd              // Tell framework to exit
+TickCmd(100)         // Schedule a timer tick in 100ms
+ComponentTickCmd     // Schedule component-specific animation
+HttpRequestCmd       // Make HTTP request (hypothetical)
+```
+
+### The Flow
+
+Here's how messages and commands work together:
+
+1. **User presses key** → Framework creates `TKeyMsg` → Sends to `Update`
+2. **Update processes message** → Updates model → Optionally returns command
+3. **Framework executes command** → Command performs I/O → Returns new message
+4. **New message sent to Update** → Cycle continues
+
+```pascal
+function TMyModel.Update(const Msg: TMsg): TUpdateResult;
+begin
+  Result.Model := Self;
+  Result.Cmd := nil;
+  
+  if Msg is TKeyMsg then
+  begin
+    case TKeyMsg(Msg).Key of
+      ' ': 
+        begin
+          // Update model state
+          NewModel := TMyModel.Create;
+          NewModel.Counter := Self.Counter + 1;
+          Result.Model := NewModel;
+          
+          // Return command to schedule timer
+          Result.Cmd := TickCmd(1000); // Will create TTickMsg in 1 second
+        end;
+    end;
+  end
+  else if Msg is TTickMsg then
+  begin
+    // Handle the timer tick message
+    WriteLn('Timer fired!');
+  end;
+end;
+```
+
+### Key Guidelines
+
+**Only use commands for I/O operations:**
+- ✅ Network requests, file operations, timers
+- ❌ Simple state updates or internal communication
+
+**Never use goroutines directly:**
+- ✅ Use commands for async operations
+- ❌ Manual thread/goroutine management
+
+**Commands are producers, messages are data:**
+- **Commands** → "Go fetch data from server"
+- **Messages** → "Here's the data from server" or "Server request failed"
+
+This separation keeps your application predictable and ensures all state changes flow through the `Update` function where they can be properly managed.
+
 ## Messages
 
 Messages are the lifeblood of a BobaUI application. They are triggered by user input or other events and are sent to your `Update` function. The base type is `TMsg`.
@@ -336,7 +428,7 @@ end;
 
 - Scrollable list display with automatic overflow handling
 - Customizable selection indicator (default: `> `)
-- Callback mechanism for handling item selection
+- **Message-based selection handling** following proper MVU pattern
 - Optional border and title
 - Vi-style navigation keys (j/k) in addition to arrow keys
 
@@ -349,7 +441,8 @@ type
   TMyModel = class(TModel)
   private
     FList: TList;
-    procedure OnItemSelect(Index: integer; const Item: string);
+    FSelectedMessage: string;
+    function GetItemMessage(Index: integer): string;
   public
     constructor Create;
     destructor Destroy; override;
@@ -364,7 +457,7 @@ begin
   FList.Title := 'Choose an Option';
   FList.Width := 30;
   FList.Height := 10;
-  FList.OnSelect := @OnItemSelect;
+  FList.ListId := 'main-list'; // Optional ID for multiple lists
   
   // Add items
   FList.AddItem('Option 1');
@@ -372,32 +465,72 @@ begin
   FList.AddItem('Option 3');
 end;
 
-procedure TMyModel.OnItemSelect(Index: integer; const Item: string);
-begin
-  WriteLn('Selected: ', Item, ' at index ', Index);
-end;
-
 function TMyModel.Update(const Msg: TMsg): TUpdateResult;
 var
   NewList: TList;
+  ListSelectionMsg: bobacomponents.TListSelectionMsg;
+  NewModel: TMyModel;
 begin
   Result.Model := Self;
   Result.Cmd := nil;
   
-  // Delegate to list for keyboard handling
-  NewList := FList.Update(Msg);
-  if NewList <> FList then
+  if Msg is TKeyMsg then
   begin
-    // List state changed, update model
-    // ... create new model instance and update list
+    // Delegate to list for keyboard handling
+    NewList := FList.Update(Msg);
+    if NewList <> FList then
+    begin
+      // Create new model with updated list
+      NewModel := TMyModel.Create;
+      NewModel.FSelectedMessage := FSelectedMessage;
+      NewModel.FList.Free;
+      NewModel.FList := NewList;
+      
+      // Check if list has a pending selection
+      if NewList.HasPendingSelection then
+      begin
+        Result.Cmd := bobacomponents.ListSelectionCmd(
+          NewList.SelectedIndex, 
+          NewList.SelectedItem, 
+          NewList.ListId
+        );
+        NewList.ClearPendingSelection;
+      end;
+      
+      Result.Model := NewModel;
+    end;
+  end
+  else if Msg is bobacomponents.TListSelectionMsg then
+  begin
+    // Handle list selection message
+    ListSelectionMsg := bobacomponents.TListSelectionMsg(Msg);
+    
+    // Create new model with updated state
+    NewModel := TMyModel.Create;
+    NewModel.FSelectedMessage := GetItemMessage(ListSelectionMsg.SelectedIndex);
+    // Copy other state...
+    Result.Model := NewModel;
   end;
 end;
 
 function TMyModel.View: string;
 begin
   Result := FList.View;
+  if FSelectedMessage <> '' then
+    Result := Result + LineEnding + LineEnding + FSelectedMessage;
 end;
 ```
+
+#### Message-Based Selection Pattern
+
+The new TList component follows the proper MVU pattern using messages instead of callbacks:
+
+1. **User presses Enter** → `TList.Update` sets pending selection
+2. **Parent calls `ListSelectionCmd`** → Creates command that produces `TListSelectionMsg`  
+3. **Framework executes command** → `TListSelectionMsg` sent to parent's `Update`
+4. **Parent handles message** → Updates model state and triggers re-render
+
+This ensures all state changes flow through the `Update` cycle where they can be properly managed.
 
 #### List Properties
 
@@ -406,18 +539,24 @@ end;
 - `Width, Height: integer` - Dimensions of the list
 - `Title: string` - Optional title displayed above the list
 - `SelectionIndicator: string` - Indicator for selected item (default: `> `)
+- `ListId: string` - Optional identifier for multiple lists
 - `ShowBorder: boolean` - Whether to show a border (default: true)
 - `BorderStyle: TBorderStyle` - Style of the border (single, double, etc.)
 - `BorderColor: TColor` - Color of the border
 - `SelectedColor: TColor` - Color of the selected item text
-- `OnSelect: TListSelectCallback` - Callback when Enter is pressed
+
+#### Selection Methods
+
+- `HasPendingSelection: Boolean` - Check if list has a pending selection
+- `GetPendingSelection: TListSelectionMsg` - Get the pending selection message
+- `ClearPendingSelection` - Clear the pending selection state
 
 #### Navigation Keys
 
 - **↑/↓** or **j/k** - Move selection up/down
 - **g** - Jump to first item
 - **G** - Jump to last item
-- **Enter** - Select current item (triggers OnSelect callback)
+- **Enter** - Select current item (creates selection message)
 
 See `examples/list_demo.pas` for a complete example showing a seasonal list with custom selection handling.
 

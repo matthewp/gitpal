@@ -7,7 +7,7 @@ unit bobastyle;
 interface
 
 uses
-  SysUtils, Math;
+  SysUtils, Math, bobaflow;
 
 type
   // Color definitions for terminal text
@@ -48,6 +48,12 @@ type
 
   TTitlePosition = (tpLeft, tpCenter, tpRight);
 
+  // Import types from bobaflow
+  TTextWrapping = bobaflow.TTextWrapping;
+  TFrameSize = bobaflow.TFrameSize;
+  TAnsiState = bobaflow.TAnsiState;
+  TStringArray = bobaflow.TStringArray;
+
   // Border characters for different styles (now string, not char)
   TBorderChars = record
     TopLeft, TopRight, BottomLeft, BottomRight: string;
@@ -78,6 +84,10 @@ type
     FContentColor: TColor;
     FContentColorRGB: TRGBColor;
     FUseRGBContent: Boolean;
+    
+    // Text wrapping support
+    FTextWrapping: TTextWrapping;
+    FWordWrapIndent: integer;
     
     procedure SetBorderStyle(AStyle: TBorderStyle);
     function GetBorderChars: TBorderChars;
@@ -110,9 +120,20 @@ type
     property ContentColorRGB: TRGBColor read FContentColorRGB write FContentColorRGB;
     property UseRGBContent: Boolean read FUseRGBContent write FUseRGBContent;
     
+    // Text wrapping properties
+    property TextWrapping: TTextWrapping read FTextWrapping write FTextWrapping;
+    property WordWrapIndent: integer read FWordWrapIndent write FWordWrapIndent;
+    
     // Rendering
     function Render: string;
   end;
+
+const
+  // Import text wrapping constants from bobaflow
+  twNone = bobaflow.twNone;
+  twWord = bobaflow.twWord;
+  twChar = bobaflow.twChar;
+  twAuto = bobaflow.twAuto;
 
 // Border style functions (ensure AnsiString types)
 function GetSingleBorder: TBorderChars;
@@ -154,6 +175,30 @@ function PadWithBackground(const Content: string; Width, Height: Integer; BgColo
 function FillArea(Width, Height: Integer; BgColor: TRGBColor): string;
 function ApplyBackgroundToText(const Text: string; BgColor: TRGBColor): string;
 function ColorBorderText(const Text: string; FgColor: TColor; BgColor: TColor; BgColorRGB: TRGBColor; UseRGBBg: Boolean): string;
+
+// Text wrapping functions
+function WrapText(const Text: string; MaxWidth: Integer; Mode: TTextWrapping = twWord): TStringArray;
+function WrapTextAnsiAware(const Text: string; MaxWidth: Integer; Mode: TTextWrapping = twWord): TStringArray;
+function WrapTextHard(const Text: string; MaxWidth: Integer): TStringArray;
+function NeedsWrapping(const Text: string; MaxWidth: Integer): Boolean;
+function IsWordBreakCharacter(C: Char): Boolean;
+function FindWrapPosition(const Line: string; MaxWidth: Integer; Mode: TTextWrapping): Integer;
+
+// ANSI sequence handling
+function ExtractAnsiState(const Text: string): TAnsiState;
+function ApplyAnsiState(const Text: string; const State: TAnsiState): string;
+function CarryForwardAnsiState(const PreviousLine, NextLine: string): string;
+function SplitTextPreservingAnsi(const Text: string; MaxWidth: Integer; Mode: TTextWrapping = twWord): TStringArray;
+
+// Frame size calculations
+function GetFrameSize(BorderStyle: TBorderStyle; HasTitle: Boolean = False): TFrameSize;
+function GetContentWidth(TotalWidth: Integer; BorderStyle: TBorderStyle): Integer;
+function GetContentHeight(TotalHeight: Integer; BorderStyle: TBorderStyle; HasTitle: Boolean = False): Integer;
+
+// Utility functions for better text handling
+function TrimTrailingSpaces(const S: string): string;
+function CountLeadingSpaces(const S: string): Integer;
+function PreserveIndentation(const OriginalLine, WrappedLine: string): string;
 
 implementation
 
@@ -390,6 +435,10 @@ begin
   // Initialize RGB colors to sensible defaults
   FBackgroundColorRGB := RGB(0, 0, 0);
   FContentColorRGB := RGB(255, 255, 255);
+  
+  // Initialize text wrapping properties
+  FTextWrapping := twAuto;
+  FWordWrapIndent := 0;
 end;
 
 procedure TStyle.SetBorderStyle(AStyle: TBorderStyle);
@@ -722,7 +771,11 @@ begin
     // Apply background and content colors to plain content
     if FUseRGBBackground or FUseRGBContent then
     begin
-      Lines := SplitLines(FContent);
+      // Apply text wrapping if needed and enabled
+      if (FTextWrapping <> twNone) and (FWidth > 0) and NeedsWrapping(FContent, FWidth) then
+        Lines := WrapTextAnsiAware(FContent, FWidth, FTextWrapping)
+      else
+        Lines := SplitLines(FContent);
       Result := AnsiString('');
       
       // Get color codes
@@ -784,21 +837,27 @@ begin
       end;
     end
     else
-      Result := FContent;
+    begin
+      // Apply text wrapping even without background colors
+      if (FTextWrapping <> twNone) and (FWidth > 0) and NeedsWrapping(FContent, FWidth) then
+      begin
+        Lines := WrapTextAnsiAware(FContent, FWidth, FTextWrapping);
+        Result := JoinVertical(Lines);
+      end
+      else
+        Result := FContent;
+    end;
     Exit;
   end;
 
-  // Split content into lines
-  Lines := SplitLines(FContent);
-  
   // Get border characters
   BorderChars := GetBorderChars;
   
-  ContentWidth := FWidth - 2;
-
   // Calculate width if not set (use display width)
   if FWidth = 0 then
   begin
+    // First get the content lines to determine required width
+    Lines := SplitLines(FContent);
     FWidth := 0;
     for I := 0 to High(Lines) do
     begin
@@ -806,8 +865,17 @@ begin
       if LineWidth > FWidth then
         FWidth := LineWidth;
     end;
-    ContentWidth := FWidth;
+    // Add border width
+    FWidth := FWidth + GetFrameSize(FBorderStyle).Width;
   end;
+  
+  ContentWidth := GetContentWidth(FWidth, FBorderStyle);
+  
+  // Apply text wrapping if needed and enabled
+  if (FTextWrapping <> twNone) and (ContentWidth > 0) and NeedsWrapping(FContent, ContentWidth) then
+    Lines := WrapTextAnsiAware(FContent, ContentWidth, FTextWrapping)
+  else
+    Lines := SplitLines(FContent);
   
   // Get background and content color codes
   if FUseRGBBackground then
@@ -1016,6 +1084,112 @@ begin
     Result := FgColorCode + BgColorCode + Text + ResetColor
   else
     Result := Text;
+end;
+
+// Text wrapping delegation to bobaflow.pas
+
+function IsWordBreakCharacter(C: Char): Boolean;
+begin
+  Result := bobaflow.IsWordBreakCharacter(C);
+end;
+
+function NeedsWrapping(const Text: string; MaxWidth: Integer): Boolean;
+begin
+  Result := bobaflow.NeedsWrapping(Text, MaxWidth);
+end;
+
+function TrimTrailingSpaces(const S: string): string;
+begin
+  Result := bobaflow.TrimTrailingSpaces(S);
+end;
+
+function CountLeadingSpaces(const S: string): Integer;
+begin
+  Result := bobaflow.CountLeadingSpaces(S);
+end;
+
+function PreserveIndentation(const OriginalLine, WrappedLine: string): string;
+begin
+  Result := bobaflow.PreserveIndentation(OriginalLine, WrappedLine);
+end;
+
+function ExtractAnsiState(const Text: string): TAnsiState;
+begin
+  Result := bobaflow.ExtractAnsiState(Text);
+end;
+
+function ApplyAnsiState(const Text: string; const State: TAnsiState): string;
+begin
+  Result := bobaflow.ApplyAnsiState(Text, State);
+end;
+
+function CarryForwardAnsiState(const PreviousLine, NextLine: string): string;
+begin
+  Result := bobaflow.CarryForwardAnsiState(PreviousLine, NextLine);
+end;
+
+function FindWrapPosition(const Line: string; MaxWidth: Integer; Mode: TTextWrapping): Integer;
+begin
+  Result := bobaflow.FindWrapPosition(Line, MaxWidth, Mode);
+end;
+
+function WrapTextHard(const Text: string; MaxWidth: Integer): TStringArray;
+begin
+  Result := bobaflow.WrapTextHard(Text, MaxWidth);
+end;
+
+function WrapText(const Text: string; MaxWidth: Integer; Mode: TTextWrapping = twWord): TStringArray;
+begin
+  Result := bobaflow.WrapText(Text, MaxWidth, Mode);
+end;
+
+function WrapTextAnsiAware(const Text: string; MaxWidth: Integer; Mode: TTextWrapping = twWord): TStringArray;
+begin
+  Result := bobaflow.WrapTextAnsiAware(Text, MaxWidth, Mode);
+end;
+
+function SplitTextPreservingAnsi(const Text: string; MaxWidth: Integer; Mode: TTextWrapping = twWord): TStringArray;
+begin
+  Result := bobaflow.SplitTextPreservingAnsi(Text, MaxWidth, Mode);
+end;
+
+function GetFrameSize(BorderStyle: TBorderStyle; HasTitle: Boolean = False): TFrameSize;
+begin
+  Result.Width := 0;
+  Result.Height := 0;
+  
+  case BorderStyle of
+    bsNone:
+      begin
+        Result.Width := 0;
+        Result.Height := 0;
+      end;
+    bsSingle, bsDouble, bsRounded, bsBold, bsRadius:
+      begin
+        Result.Width := 2;  // Left + right borders
+        Result.Height := 2; // Top + bottom borders
+      end;
+  end;
+  
+  // Title doesn't add to frame size as it's part of the top border
+end;
+
+function GetContentWidth(TotalWidth: Integer; BorderStyle: TBorderStyle): Integer;
+var
+  FrameSize: TFrameSize;
+begin
+  FrameSize := GetFrameSize(BorderStyle);
+  Result := TotalWidth - FrameSize.Width;
+  if Result < 0 then Result := 0;
+end;
+
+function GetContentHeight(TotalHeight: Integer; BorderStyle: TBorderStyle; HasTitle: Boolean = False): Integer;
+var
+  FrameSize: TFrameSize;
+begin
+  FrameSize := GetFrameSize(BorderStyle, HasTitle);
+  Result := TotalHeight - FrameSize.Height;
+  if Result < 0 then Result := 0;
 end;
 
 end. 

@@ -13,6 +13,19 @@ uses
   bobastyle;
 
 type
+  // List selection message for component communication
+  TListSelectionMsg = class(bobaui.TMsg)
+  private
+    FSelectedIndex: Integer;
+    FSelectedItem: string;
+    FListId: string;
+  public
+    constructor Create(AIndex: Integer; const AItem: string; const AListId: string = '');
+    property SelectedIndex: Integer read FSelectedIndex;
+    property SelectedItem: string read FSelectedItem;
+    property ListId: string read FListId;
+  end;
+
   TSpinnerType = (
     stLine,
     stDot,
@@ -221,9 +234,6 @@ type
     procedure InsertChar(Ch: char);
   end;
 
-  // Callback procedure type for list selection
-  TListSelectCallback = procedure(Index: integer; const Item: string) of object;
-
   // List component for selecting items
   TList = class
   private
@@ -234,7 +244,10 @@ type
     FHeight: integer;
     FTitle: string;
     FSelectionIndicator: string;
-    FOnSelect: TListSelectCallback;
+    FListId: string;
+    FHasPendingSelection: Boolean;
+    FPendingSelectionIndex: Integer;
+    FPendingSelectionItem: string;
     FShowBorder: boolean;
     FBorderStyle: TBorderStyle;
     FBorderColor: TColor;
@@ -255,7 +268,7 @@ type
     property Height: integer read FHeight write FHeight;
     property Title: string read FTitle write FTitle;
     property SelectionIndicator: string read FSelectionIndicator write FSelectionIndicator;
-    property OnSelect: TListSelectCallback read FOnSelect write FOnSelect;
+    property ListId: string read FListId write FListId;
     property ShowBorder: boolean read FShowBorder write FShowBorder;
     property BorderStyle: TBorderStyle read FBorderStyle write FBorderStyle;
     property BorderColor: TColor read FBorderColor write FBorderColor;
@@ -265,20 +278,58 @@ type
     
     // Methods
     function View: string;
-    function Update(const Msg: TMsg): TList;
+    function Update(const Msg: bobaui.TMsg): TList;
     procedure AddItem(const Item: string);
     procedure ClearItems;
     procedure SelectNext;
     procedure SelectPrevious;
     procedure SelectFirst;
     procedure SelectLast;
-    procedure TriggerSelect;
+    
+    // Selection handling for message-based communication
+    function HasPendingSelection: Boolean;
+    function GetPendingSelection: TListSelectionMsg;
+    procedure ClearPendingSelection;
   end;
+
+// Component command functions
+function ListSelectionCmd(Index: Integer; const Item: string; const ListId: string = ''): bobaui.TCmd;
 
 var
   NextSpinnerId: integer = 0;
 
 implementation
+
+// TListSelectionMsg implementation
+
+constructor TListSelectionMsg.Create(AIndex: Integer; const AItem: string; const AListId: string = '');
+begin
+  inherited Create;
+  FSelectedIndex := AIndex;
+  FSelectedItem := AItem;
+  FListId := AListId;
+end;
+
+// Component command functions
+
+// Global variables for ListSelectionCmd parameters
+var
+  PendingListSelectionIndex: Integer = 0;
+  PendingListSelectionItem: string = '';
+  PendingListSelectionId: string = '';
+
+function DoListSelectionCmd: bobaui.TMsg; cdecl;
+begin
+  Result := TListSelectionMsg.Create(PendingListSelectionIndex, PendingListSelectionItem, PendingListSelectionId);
+end;
+
+function ListSelectionCmd(Index: Integer; const Item: string; const ListId: string = ''): bobaui.TCmd;
+begin
+  PendingListSelectionIndex := Index;
+  PendingListSelectionItem := Item;
+  PendingListSelectionId := ListId;
+  Result := @DoListSelectionCmd;
+end;
 
 // TDOSMenuCommand implementation
 
@@ -1654,7 +1705,10 @@ begin
   FHeight := 10;
   FTitle := AnsiString('');
   FSelectionIndicator := AnsiString('> ');
-  FOnSelect := nil;
+  FListId := AnsiString('');
+  FHasPendingSelection := False;
+  FPendingSelectionIndex := 0;
+  FPendingSelectionItem := AnsiString('');
   FShowBorder := True;
   FBorderStyle := bsSingle;
   FBorderColor := cDefault;
@@ -1777,19 +1831,20 @@ begin
     end;
 end;
 
-function TList.Update(const Msg: TMsg): TList;
+function TList.Update(const Msg: bobaui.TMsg): TList;
 var
-  KeyMsg: TKeyMsg;
+  KeyMsg: bobaui.TKeyMsg;
   NewList: TList;
+  DebugFile: TextFile;
 begin
   Result := Self; // Default: no change
   
   if not FFocused then
     Exit;
   
-  if Msg is TKeyMsg then
+  if Msg is bobaui.TKeyMsg then
   begin
-    KeyMsg := TKeyMsg(Msg);
+    KeyMsg := bobaui.TKeyMsg(Msg);
     
     // Create new instance for immutable updates
     NewList := TList.Create;
@@ -1800,7 +1855,10 @@ begin
     NewList.FHeight := FHeight;
     NewList.FTitle := FTitle;
     NewList.FSelectionIndicator := FSelectionIndicator;
-    NewList.FOnSelect := FOnSelect;
+    NewList.FListId := FListId;
+    NewList.FHasPendingSelection := False;
+    NewList.FPendingSelectionIndex := 0;
+    NewList.FPendingSelectionItem := '';
     NewList.FShowBorder := FShowBorder;
     NewList.FBorderStyle := FBorderStyle;
     NewList.FBorderColor := FBorderColor;
@@ -1820,7 +1878,13 @@ begin
     end
     else if (KeyMsg.Key = #13) or (KeyMsg.Key = #10) then // Enter key (CR or LF)
     begin
-      NewList.TriggerSelect;
+      // Set pending selection only if list has items
+      if Length(FItems) > 0 then
+      begin
+        NewList.FHasPendingSelection := True;
+        NewList.FPendingSelectionIndex := FSelectedIndex;
+        NewList.FPendingSelectionItem := GetSelectedItem;
+      end;
       Result := NewList;
     end
     else if (KeyMsg.Key = 'g') then // Go to top
@@ -1884,12 +1948,24 @@ begin
     FSelectedIndex := Length(FItems) - 1;
 end;
 
-procedure TList.TriggerSelect;
+function TList.HasPendingSelection: Boolean;
 begin
-  if Assigned(FOnSelect) and (FSelectedIndex >= 0) and (FSelectedIndex < Length(FItems)) then
-  begin
-    FOnSelect(FSelectedIndex, FItems[FSelectedIndex]);
-  end;
+  Result := FHasPendingSelection;
+end;
+
+function TList.GetPendingSelection: TListSelectionMsg;
+begin
+  if FHasPendingSelection then
+    Result := TListSelectionMsg.Create(FPendingSelectionIndex, FPendingSelectionItem, FListId)
+  else
+    Result := nil;
+end;
+
+procedure TList.ClearPendingSelection;
+begin
+  FHasPendingSelection := False;
+  FPendingSelectionIndex := 0;
+  FPendingSelectionItem := '';
 end;
 
 end.

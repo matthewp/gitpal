@@ -20,7 +20,6 @@ type
     FTerminalWidth, FTerminalHeight: integer;
     FList: bobacomponents.TList;
     FCommitMessage: string;
-    procedure OnItemSelect(Index: integer; const Item: string);
   public
     constructor Create; overload;
     constructor Create(AWidth, AHeight: integer); overload;
@@ -40,7 +39,6 @@ begin
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
   FList.AddItem(AnsiString('Decline'));
-  FList.OnSelect := @OnItemSelect;
   FList.Width := 30;
   FList.Height := 5;
   FList.ShowBorder := false;
@@ -56,7 +54,6 @@ begin
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
   FList.AddItem(AnsiString('Decline'));
-  FList.OnSelect := @OnItemSelect;
   FList.Width := 30;
   FList.Height := 5;
   FList.ShowBorder := false;
@@ -72,7 +69,6 @@ begin
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
   FList.AddItem(AnsiString('Decline'));
-  FList.OnSelect := @OnItemSelect;
   FList.Width := 30;
   FList.Height := 5;
   FList.ShowBorder := false;
@@ -84,13 +80,6 @@ begin
   inherited Destroy;
 end;
 
-procedure TCommitModel.OnItemSelect(Index: integer; const Item: string);
-begin
-  if Index = 0 then
-    writeln('Accept selected')
-  else
-    writeln('Decline selected');
-end;
 
 function TCommitModel.View: string;
 var
@@ -127,6 +116,7 @@ function TCommitModel.Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult;
 var
   KeyMsg: bobaui.TKeyMsg;
   WindowMsg: bobaui.TWindowSizeMsg;
+  ListSelectionMsg: bobacomponents.TListSelectionMsg;
   NewModel: TCommitModel;
   NewList: bobacomponents.TList;
 begin
@@ -142,24 +132,43 @@ begin
     begin
       Result.Cmd := bobaui.QuitCmd;
     end
-    // Handle Enter to select and quit
-    else if KeyMsg.Key = #13 then
-    begin
-      OnItemSelect(FList.SelectedIndex, string(FList.Items[FList.SelectedIndex]));
-      Result.Cmd := bobaui.QuitCmd;
-    end
     else
     begin
-      // Delegate other keys to the list component
+      // Delegate keys to the list component
       NewList := FList.Update(Msg);
       if NewList <> FList then
       begin
         NewModel := TCommitModel.Create(FTerminalWidth, FTerminalHeight, FCommitMessage);
         NewModel.FList.Free;
         NewModel.FList := NewList;
+        
+        // Check if list has a pending selection
+        if NewList.HasPendingSelection then
+        begin
+          Result.Cmd := bobacomponents.ListSelectionCmd(
+            NewList.SelectedIndex, 
+            NewList.SelectedItem, 
+            NewList.ListId
+          );
+          NewList.ClearPendingSelection;
+        end;
+        
         Result.Model := NewModel;
       end;
     end;
+  end
+  else if Msg is bobacomponents.TListSelectionMsg then
+  begin
+    // Handle list selection message
+    ListSelectionMsg := bobacomponents.TListSelectionMsg(Msg);
+    
+    // Handle selection and quit
+    if ListSelectionMsg.SelectedIndex = 0 then
+      writeln('Accept selected')
+    else
+      writeln('Decline selected');
+      
+    Result.Cmd := bobaui.QuitCmd;
   end
   else if Msg is bobaui.TWindowSizeMsg then
   begin

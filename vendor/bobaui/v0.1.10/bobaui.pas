@@ -1972,19 +1972,27 @@ begin
             if CmdMsg is TQuitMsg then
             begin
               Quit;
+              CmdMsg.Free;
             end
             else if CmdMsg is TShowCursorMsg then
             begin
               if FDisplay is TAnsiDisplay then
                 TAnsiDisplay(FDisplay).WriteAnsiSequence(#27'[?25h');
+              CmdMsg.Free;
             end
             else if CmdMsg is THideCursorMsg then
             begin
               if FDisplay is TAnsiDisplay then
                 TAnsiDisplay(FDisplay).WriteAnsiSequence(#27'[?25l');
+              CmdMsg.Free;
+            end
+            else
+            begin
+              // For user-defined messages, push them back to the queue
+              // so they get processed in the next Update cycle
+              FMessageQueue.Push(CmdMsg);
+              CmdMsg := nil; // Don't free - queue owns it now
             end;
-            CmdMsg.Free;
-            CmdMsg := nil;
           end;
         end;
 
