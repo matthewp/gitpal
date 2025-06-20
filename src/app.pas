@@ -14,7 +14,8 @@ type
   TSelectModel = class(bobaui.TModel)
   private
     FTerminalWidth, FTerminalHeight: integer;
-    FSelectedIndex: integer;
+    FList: bobacomponents.TList;
+    procedure OnItemSelect(Index: integer; const Item: string);
   public
     constructor Create; overload;
     constructor Create(AWidth, AHeight: integer); overload;
@@ -28,7 +29,14 @@ begin
   inherited Create;
   FTerminalWidth := 80;
   FTerminalHeight := 24;
-  FSelectedIndex := 0;
+  
+  FList := bobacomponents.TList.Create;
+  FList.AddItem(AnsiString('Accept'));
+  FList.AddItem(AnsiString('Decline'));
+  FList.OnSelect := @OnItemSelect;
+  FList.Width := 30;
+  FList.Height := 5;
+  FList.ShowBorder := false;
 end;
 
 constructor TSelectModel.Create(AWidth, AHeight: integer);
@@ -36,32 +44,33 @@ begin
   inherited Create;
   FTerminalWidth := AWidth;
   FTerminalHeight := AHeight;
-  FSelectedIndex := 0;
+  
+  FList := bobacomponents.TList.Create;
+  FList.AddItem(AnsiString('Accept'));
+  FList.AddItem(AnsiString('Decline'));
+  FList.OnSelect := @OnItemSelect;
+  FList.Width := 30;
+  FList.Height := 5;
+  FList.ShowBorder := false;
 end;
 
 destructor TSelectModel.Destroy;
 begin
+  FList.Free;
   inherited Destroy;
 end;
 
-function TSelectModel.View: string;
-var
-  Options: array[0..1] of AnsiString;
-  I: integer;
+procedure TSelectModel.OnItemSelect(Index: integer; const Item: string);
 begin
-  Options[0] := AnsiString('Accept');
-  Options[1] := AnsiString('Decline');
-  
-  Result := AnsiString('Commit changes?') + #10 + #10;
-  
-  for I := 0 to 1 do
-  begin
-    if I = FSelectedIndex then
-      Result := Result + AnsiString('> ')
-    else
-      Result := Result + AnsiString('  ');
-    Result := Result + Options[I] + #10;
-  end;
+  if Index = 0 then
+    writeln('Accept selected')
+  else
+    writeln('Decline selected');
+end;
+
+function TSelectModel.View: string;
+begin
+  Result := AnsiString('Commit changes?') + #10 + #10 + FList.View;
 end;
 
 function TSelectModel.Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult;
@@ -69,6 +78,7 @@ var
   KeyMsg: bobaui.TKeyMsg;
   WindowMsg: bobaui.TWindowSizeMsg;
   NewModel: TSelectModel;
+  NewList: bobacomponents.TList;
 begin
   Result.Model := Self;
   Result.Cmd := nil;
@@ -82,26 +92,23 @@ begin
     begin
       Result.Cmd := bobaui.QuitCmd;
     end
-    // Handle up arrow or 'k' to move up
-    else if KeyMsg.IsUpArrow or (KeyMsg.Key = 'k') or (KeyMsg.Key = 'K') then
-    begin
-      if FSelectedIndex > 0 then
-        FSelectedIndex := FSelectedIndex - 1;
-    end
-    // Handle down arrow or 'j' to move down
-    else if KeyMsg.IsDownArrow or (KeyMsg.Key = 'j') or (KeyMsg.Key = 'J') then
-    begin
-      if FSelectedIndex < 1 then
-        FSelectedIndex := FSelectedIndex + 1;
-    end
-    // Handle Enter to select option
+    // Handle Enter to select and quit
     else if KeyMsg.Key = #13 then
     begin
-      if FSelectedIndex = 0 then
-        writeln('Accept selected')
-      else
-        writeln('Decline selected');
+      OnItemSelect(FList.SelectedIndex, string(FList.Items[FList.SelectedIndex]));
       Result.Cmd := bobaui.QuitCmd;
+    end
+    else
+    begin
+      // Delegate other keys to the list component
+      NewList := FList.Update(Msg);
+      if NewList <> FList then
+      begin
+        NewModel := TSelectModel.Create(FTerminalWidth, FTerminalHeight);
+        NewModel.FList.Free;
+        NewModel.FList := NewList;
+        Result.Model := NewModel;
+      end;
     end;
   end
   else if Msg is bobaui.TWindowSizeMsg then
@@ -110,7 +117,7 @@ begin
     if (WindowMsg.Width <> FTerminalWidth) or (WindowMsg.Height <> FTerminalHeight) then
     begin
       NewModel := TSelectModel.Create(WindowMsg.Width, WindowMsg.Height);
-      NewModel.FSelectedIndex := FSelectedIndex;
+      NewModel.FList.SelectedIndex := FList.SelectedIndex;
       Result.Model := NewModel;
     end;
   end;
@@ -122,7 +129,7 @@ var
   Display: bobaui.TDisplay;
 begin
   Model := TSelectModel.Create(80, 24);
-  Prog := TBobaUIProgram.Create(Model, bobaui.dmFullscreen);
+  Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);
   
   // Set global program reference
   GlobalProgram := Pointer(Prog);
