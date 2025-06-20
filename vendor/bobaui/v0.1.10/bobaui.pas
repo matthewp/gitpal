@@ -181,6 +181,7 @@ type
     FDisplayMode: TDisplayMode;
     FInlineBaseRow, FInlineBaseCol: Integer; // Starting position for inline mode
     FInlineInitialized: Boolean;
+    FCursorX, FCursorY: Integer; // Current cursor position tracking for optimization
     {$IFDEF UNIX}
     FOriginalTermios: TermIOs;
     {$ENDIF}
@@ -1081,6 +1082,10 @@ begin
   FInlineBaseRow := 1;
   FInlineBaseCol := 1;
   
+  // Initialize cursor position tracking (assume starting at 1,1)
+  FCursorX := 1;
+  FCursorY := 1;
+  
   // Only use alternate screen for full screen mode
   if FDisplayMode = dmFullScreen then
   begin
@@ -1130,17 +1135,30 @@ begin
   // Default fallback values
   FTerminalWidth := 80;
   FTerminalHeight := 24;
+  DebugLog('DetectTerminalSize: Starting with defaults - Width: ' + IntToStr(FTerminalWidth) + ', Height: ' + IntToStr(FTerminalHeight));
   
   {$IFDEF UNIX}
   // Get actual terminal size using ioctl
   if fpioctl(STDOUT_FILENO, TIOCGWINSZ, @WS) = 0 then
   begin
+    DebugLog('DetectTerminalSize: ioctl success - ws_col: ' + IntToStr(WS.ws_col) + ', ws_row: ' + IntToStr(WS.ws_row));
     if (WS.ws_col > 0) and (WS.ws_row > 0) then
     begin
       FTerminalWidth := WS.ws_col;
       FTerminalHeight := WS.ws_row;
+      DebugLog('DetectTerminalSize: Updated terminal size - Width: ' + IntToStr(FTerminalWidth) + ', Height: ' + IntToStr(FTerminalHeight));
+    end
+    else
+    begin
+      DebugLog('DetectTerminalSize: Invalid terminal size from ioctl, keeping defaults');
     end;
+  end
+  else
+  begin
+    DebugLog('DetectTerminalSize: ioctl failed, keeping defaults');
   end;
+  {$ELSE}
+  DebugLog('DetectTerminalSize: Non-Unix platform, using defaults');
   {$ENDIF}
 end;
 
@@ -1201,9 +1219,16 @@ procedure TAnsiDisplay.MoveCursor(X, Y: integer);
 var
   Sequence: string;
 begin
-  // ANSI escape sequence: ESC[row;colH
-  Sequence := #27'[' + IntToStr(Y) + ';' + IntToStr(X) + 'H';
-  WriteAnsiSequence(Sequence);
+  // Only move cursor if it's not already at the target position
+  if (FCursorX <> X) or (FCursorY <> Y) then
+  begin
+    // ANSI escape sequence: ESC[row;colH
+    Sequence := #27'[' + IntToStr(Y) + ';' + IntToStr(X) + 'H';
+    WriteAnsiSequence(Sequence);
+    // Update tracked cursor position
+    FCursorX := X;
+    FCursorY := Y;
+  end;
 end;
 
 function TAnsiDisplay.KeyPressed: boolean;
@@ -1244,6 +1269,7 @@ end;
 function TAnsiDisplay.GetWidth: integer;
 begin
   Result := FTerminalWidth;
+  DebugLog('GetWidth called, returning: ' + IntToStr(Result));
 end;
 
 function TAnsiDisplay.GetHeight: integer;
@@ -1295,6 +1321,9 @@ begin
     begin
       // For inline mode, save cursor position and use it as our base
       WriteAnsiSequence(#27'[s'); // Save cursor position
+      // Update our base position tracking (current cursor position becomes base)
+      FInlineBaseCol := FCursorX;
+      FInlineBaseRow := FCursorY;
       FInlineInitialized := True;
     end;
     
@@ -1339,17 +1368,27 @@ begin
       begin
         // Move cursor to this line (1-based positioning)
         WriteAnsiSequence(#27'[' + IntToStr(I + 1) + ';1H');
+        // Update tracked cursor position
+        FCursorX := 1;
+        FCursorY := I + 1;
       end
       else if FDisplayMode = dmInline then
       begin
         // For inline mode, position relative to our saved starting position
         WriteAnsiSequence(#27'[u'); // Restore cursor position
+        // Update tracked position to base position
+        FCursorX := FInlineBaseCol;
+        FCursorY := FInlineBaseRow;
         if I > 0 then
         begin
           // Move down I lines from the saved position
           WriteAnsiSequence(#27'[' + IntToStr(I) + 'B'); // Move down I lines
+          // Update tracked Y position
+          FCursorY := FInlineBaseRow + I;
         end;
         WriteAnsiSequence(#27'[1G'); // Move to column 1
+        // Update tracked X position
+        FCursorX := 1;
       end;
       
       // Write the new line content
@@ -1371,17 +1410,27 @@ begin
       if FDisplayMode = dmFullScreen then
       begin
         WriteAnsiSequence(#27'[' + IntToStr(I + 1) + ';1H');
+        // Update tracked cursor position
+        FCursorX := 1;
+        FCursorY := I + 1;
       end
       else if FDisplayMode = dmInline then
       begin
         // For inline mode, position relative to our saved starting position
         WriteAnsiSequence(#27'[u'); // Restore cursor position
+        // Update tracked position to base position
+        FCursorX := FInlineBaseCol;
+        FCursorY := FInlineBaseRow;
         if I > 0 then
         begin
           // Move down I lines from the saved position
           WriteAnsiSequence(#27'[' + IntToStr(I) + 'B'); // Move down I lines
+          // Update tracked Y position
+          FCursorY := FInlineBaseRow + I;
         end;
         WriteAnsiSequence(#27'[1G'); // Move to column 1
+        // Update tracked X position
+        FCursorX := 1;
       end;
       ClearToEndOfLine;
     end;

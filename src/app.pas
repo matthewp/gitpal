@@ -95,6 +95,7 @@ begin
   try
     Style.BorderStyle := bobastyle.bsSingle;
     Style.BorderColor := bobastyle.cBrightGreen;
+    Style.Width := FTerminalWidth;
     Style.Content := PaddedContent;
     BorderedMessage := Style.Render;
   finally
