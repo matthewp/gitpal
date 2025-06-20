@@ -221,6 +221,60 @@ type
     procedure InsertChar(Ch: char);
   end;
 
+  // Callback procedure type for list selection
+  TListSelectCallback = procedure(Index: integer; const Item: string) of object;
+
+  // List component for selecting items
+  TList = class
+  private
+    FItems: TStringArray;
+    FSelectedIndex: integer;
+    FFocused: boolean;
+    FWidth: integer;
+    FHeight: integer;
+    FTitle: string;
+    FSelectionIndicator: string;
+    FOnSelect: TListSelectCallback;
+    FShowBorder: boolean;
+    FBorderStyle: TBorderStyle;
+    FBorderColor: TColor;
+    FSelectedColor: TColor;
+    FScrollOffset: integer;
+    function GetSelectedItem: string;
+    function GetItemCount: integer;
+    function GetVisibleItems: integer;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    
+    // Properties
+    property Items: TStringArray read FItems write FItems;
+    property SelectedIndex: integer read FSelectedIndex write FSelectedIndex;
+    property Focused: boolean read FFocused write FFocused;
+    property Width: integer read FWidth write FWidth;
+    property Height: integer read FHeight write FHeight;
+    property Title: string read FTitle write FTitle;
+    property SelectionIndicator: string read FSelectionIndicator write FSelectionIndicator;
+    property OnSelect: TListSelectCallback read FOnSelect write FOnSelect;
+    property ShowBorder: boolean read FShowBorder write FShowBorder;
+    property BorderStyle: TBorderStyle read FBorderStyle write FBorderStyle;
+    property BorderColor: TColor read FBorderColor write FBorderColor;
+    property SelectedColor: TColor read FSelectedColor write FSelectedColor;
+    property SelectedItem: string read GetSelectedItem;
+    property ItemCount: integer read GetItemCount;
+    
+    // Methods
+    function View: string;
+    function Update(const Msg: TMsg): TList;
+    procedure AddItem(const Item: string);
+    procedure ClearItems;
+    procedure SelectNext;
+    procedure SelectPrevious;
+    procedure SelectFirst;
+    procedure SelectLast;
+    procedure TriggerSelect;
+  end;
+
 var
   NextSpinnerId: integer = 0;
 
@@ -1586,6 +1640,256 @@ begin
   if Assigned(FStyle) then
     FStyle.Free;
   FStyle := AStyle;
+end;
+
+// TList implementation
+
+constructor TList.Create;
+begin
+  inherited Create;
+  SetLength(FItems, 0);
+  FSelectedIndex := 0;
+  FFocused := True;
+  FWidth := 30;
+  FHeight := 10;
+  FTitle := AnsiString('');
+  FSelectionIndicator := AnsiString('> ');
+  FOnSelect := nil;
+  FShowBorder := True;
+  FBorderStyle := bsSingle;
+  FBorderColor := cDefault;
+  FSelectedColor := cBrightWhite;
+  FScrollOffset := 0;
+end;
+
+destructor TList.Destroy;
+begin
+  SetLength(FItems, 0);
+  inherited Destroy;
+end;
+
+function TList.GetSelectedItem: string;
+begin
+  if (FSelectedIndex >= 0) and (FSelectedIndex < Length(FItems)) then
+    Result := FItems[FSelectedIndex]
+  else
+    Result := AnsiString('');
+end;
+
+function TList.GetItemCount: integer;
+begin
+  Result := Length(FItems);
+end;
+
+function TList.GetVisibleItems: integer;
+var
+  ContentHeight: integer;
+begin
+  ContentHeight := FHeight;
+  if FShowBorder then
+    ContentHeight := ContentHeight - 2; // Top and bottom borders
+  if FTitle <> '' then
+    ContentHeight := ContentHeight - 2; // Title and spacing
+  Result := ContentHeight;
+end;
+
+function TList.View: string;
+var
+  Style: TStyle;
+  ContentLines: TStringArray;
+  i, StartIdx, EndIdx: integer;
+  ItemText: string;
+  VisibleItems: integer;
+begin
+  SetLength(ContentLines, 0);
+  
+    // Calculate visible range with scrolling
+    VisibleItems := GetVisibleItems;
+    
+    // Adjust scroll offset to keep selected item visible
+    if FSelectedIndex < FScrollOffset then
+      FScrollOffset := FSelectedIndex
+    else if FSelectedIndex >= FScrollOffset + VisibleItems then
+      FScrollOffset := FSelectedIndex - VisibleItems + 1;
+    
+    StartIdx := FScrollOffset;
+    EndIdx := StartIdx + VisibleItems - 1;
+    if EndIdx >= Length(FItems) then
+      EndIdx := Length(FItems) - 1;
+    
+    // Build content
+    for i := StartIdx to EndIdx do
+    begin
+      if i = FSelectedIndex then
+      begin
+        if FFocused and (FSelectedColor <> cDefault) then
+          ItemText := bobastyle.GetColorCode(FSelectedColor) + FSelectionIndicator + FItems[i] + bobastyle.ResetColor
+        else
+          ItemText := FSelectionIndicator + FItems[i];
+      end
+      else
+      begin
+        // Add spacing to align with selection indicator
+        ItemText := StringOfChar(' ', Length(FSelectionIndicator)) + FItems[i];
+      end;
+      SetLength(ContentLines, Length(ContentLines) + 1);
+      ContentLines[High(ContentLines)] := ItemText;
+    end;
+    
+    // Show scroll indicators if needed
+    if (Length(FItems) > VisibleItems) and (Length(ContentLines) > 0) then
+    begin
+      if FScrollOffset > 0 then
+        ContentLines[0] := ContentLines[0] + ' ↑';
+      if EndIdx < Length(FItems) - 1 then
+        ContentLines[High(ContentLines)] := ContentLines[High(ContentLines)] + ' ↓';
+    end;
+    
+    if FShowBorder then
+    begin
+      Style := TStyle.Create;
+      try
+        Style.BorderStyle := FBorderStyle;
+        if FFocused then
+          Style.BorderColor := FBorderColor
+        else
+          Style.BorderColor := cDefault;
+        Style.Width := FWidth;
+        Style.Height := FHeight;
+        Style.Content := bobastyle.JoinVertical(ContentLines);
+        if FTitle <> '' then
+        begin
+          Style.Title := FTitle;
+          Style.TitlePosition := tpCenter;
+        end;
+        Result := Style.Render;
+      finally
+        Style.Free;
+      end;
+    end
+    else
+    begin
+      // No border, just the content
+      if FTitle <> '' then
+        Result := FTitle + #10 + #10 + bobastyle.JoinVertical(ContentLines)
+      else
+        Result := bobastyle.JoinVertical(ContentLines);
+    end;
+end;
+
+function TList.Update(const Msg: TMsg): TList;
+var
+  KeyMsg: TKeyMsg;
+  NewList: TList;
+begin
+  Result := Self; // Default: no change
+  
+  if not FFocused then
+    Exit;
+  
+  if Msg is TKeyMsg then
+  begin
+    KeyMsg := TKeyMsg(Msg);
+    
+    // Create new instance for immutable updates
+    NewList := TList.Create;
+    NewList.FItems := Copy(FItems);
+    NewList.FSelectedIndex := FSelectedIndex;
+    NewList.FFocused := FFocused;
+    NewList.FWidth := FWidth;
+    NewList.FHeight := FHeight;
+    NewList.FTitle := FTitle;
+    NewList.FSelectionIndicator := FSelectionIndicator;
+    NewList.FOnSelect := FOnSelect;
+    NewList.FShowBorder := FShowBorder;
+    NewList.FBorderStyle := FBorderStyle;
+    NewList.FBorderColor := FBorderColor;
+    NewList.FSelectedColor := FSelectedColor;
+    NewList.FScrollOffset := FScrollOffset;
+    
+    // Handle navigation
+    if KeyMsg.IsUpArrow or (KeyMsg.Key = 'k') then
+    begin
+      NewList.SelectPrevious;
+      Result := NewList;
+    end
+    else if KeyMsg.IsDownArrow or (KeyMsg.Key = 'j') then
+    begin
+      NewList.SelectNext;
+      Result := NewList;
+    end
+    else if (KeyMsg.Key = #13) or (KeyMsg.Key = #10) then // Enter key (CR or LF)
+    begin
+      NewList.TriggerSelect;
+      Result := NewList;
+    end
+    else if (KeyMsg.Key = 'g') then // Go to top
+    begin
+      NewList.SelectFirst;
+      Result := NewList;
+    end
+    else if (KeyMsg.Key = 'G') then // Go to bottom
+    begin
+      NewList.SelectLast;
+      Result := NewList;
+    end
+    else
+    begin
+      // No change, free the new list
+      NewList.Free;
+    end;
+  end;
+end;
+
+procedure TList.AddItem(const Item: string);
+begin
+  SetLength(FItems, Length(FItems) + 1);
+  FItems[High(FItems)] := Item;
+end;
+
+procedure TList.ClearItems;
+begin
+  SetLength(FItems, 0);
+  FSelectedIndex := 0;
+  FScrollOffset := 0;
+end;
+
+procedure TList.SelectNext;
+begin
+  if Length(FItems) > 0 then
+  begin
+    FSelectedIndex := (FSelectedIndex + 1) mod Length(FItems);
+  end;
+end;
+
+procedure TList.SelectPrevious;
+begin
+  if Length(FItems) > 0 then
+  begin
+    FSelectedIndex := FSelectedIndex - 1;
+    if FSelectedIndex < 0 then
+      FSelectedIndex := Length(FItems) - 1;
+  end;
+end;
+
+procedure TList.SelectFirst;
+begin
+  FSelectedIndex := 0;
+  FScrollOffset := 0;
+end;
+
+procedure TList.SelectLast;
+begin
+  if Length(FItems) > 0 then
+    FSelectedIndex := Length(FItems) - 1;
+end;
+
+procedure TList.TriggerSelect;
+begin
+  if Assigned(FOnSelect) and (FSelectedIndex >= 0) and (FSelectedIndex < Length(FItems)) then
+  begin
+    FOnSelect(FSelectedIndex, FItems[FSelectedIndex]);
+  end;
 end;
 
 end.

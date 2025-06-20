@@ -1367,7 +1367,21 @@ begin
   begin
     for I := Length(NewLines) to Length(FLastRender) - 1 do
     begin
-      WriteAnsiSequence(#27'[' + IntToStr(I + 1) + ';1H');
+      if FDisplayMode = dmFullScreen then
+      begin
+        WriteAnsiSequence(#27'[' + IntToStr(I + 1) + ';1H');
+      end
+      else if FDisplayMode = dmInline then
+      begin
+        // For inline mode, position relative to our saved starting position
+        WriteAnsiSequence(#27'[u'); // Restore cursor position
+        if I > 0 then
+        begin
+          // Move down I lines from the saved position
+          WriteAnsiSequence(#27'[' + IntToStr(I) + 'B'); // Move down I lines
+        end;
+        WriteAnsiSequence(#27'[1G'); // Move to column 1
+      end;
       ClearToEndOfLine;
     end;
   end;

@@ -104,3 +104,28 @@ Set LLM API keys via environment variables:
 export OPENAI_API_KEY="your-api-key-here"
 export ANTHROPIC_API_KEY="your-api-key-here"
 ```
+
+## Dependency Management
+
+### Updating BobaUI
+BobaUI releases are available on SourceHut. Versions are installed in versioned directories under `vendor/bobaui/v{VERSION}/`.
+
+Download URL pattern: `https://git.sr.ht/~matthewp/bobaui/refs/download/v{VERSION}/bobaui-{VERSION}.zip`
+
+Update process:
+```bash
+# Replace {VERSION} with the target version (e.g., 0.1.6)
+mkdir -p vendor/bobaui/v{VERSION}
+cd vendor/bobaui/v{VERSION} && curl -L "https://git.sr.ht/~matthewp/bobaui/refs/download/v{VERSION}/bobaui-{VERSION}.zip" -o bobaui.zip && unzip -q bobaui.zip && rm bobaui.zip
+# Update Makefile to point to new version path
+# Remove old version directory if desired
+```
+
+This process will:
+1. Create a new versioned directory for the release
+2. Download and extract the specified version 
+3. Remove the temporary zip file
+4. Requires updating Makefile to use new version path
+5. Optionally remove old version directories
+
+**Current version**: v0.1.6 (located in `vendor/bobaui/v0.1.6/`)
