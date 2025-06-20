@@ -19,7 +19,7 @@ BIN_DIR = bin
 VENDOR_DIR = vendor
 
 # Unit search paths for vendor dependencies
-UNIT_PATHS = -Fu$(VENDOR_DIR)/bobaui/v0.1.10 -Fu$(VENDOR_DIR)/models.pas
+UNIT_PATHS = -Fu$(VENDOR_DIR)/bobaui/v0.1.11 -Fu$(VENDOR_DIR)/models.pas
 
 # Source files
 MAIN_SRC = $(SRC_DIR)/app.pas

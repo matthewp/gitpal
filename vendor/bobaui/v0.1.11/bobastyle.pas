@@ -765,20 +765,7 @@ var
   LineContent, PaddedLine: string;
   EmptyLine: string;
   ActualHeight: integer;
-  LogFile: TextFile;
 begin
-  // Initialize debug logging
-  AssignFile(LogFile, 'bobaui_debug.log');
-  if FileExists('bobaui_debug.log') then
-    Append(LogFile)
-  else
-    Rewrite(LogFile);
-  
-  WriteLn(LogFile, '=== TStyle.Render START ===');
-  WriteLn(LogFile, 'FWidth: ', FWidth);
-  WriteLn(LogFile, 'FHeight: ', FHeight);
-  WriteLn(LogFile, 'FBorderStyle: ', Ord(FBorderStyle));
-  WriteLn(LogFile, 'Content length: ', Length(FContent));
   // Handle no-border case with background support
   if FBorderStyle = bsNone then
   begin
@@ -884,21 +871,12 @@ begin
   end;
   
   ContentWidth := GetContentWidth(FWidth, FBorderStyle);
-  WriteLn(LogFile, 'ContentWidth calculated: ', ContentWidth);
   
   // Apply text wrapping if needed and enabled
   if (FTextWrapping <> twNone) and (ContentWidth > 0) and NeedsWrapping(FContent, ContentWidth) then
-  begin
-    WriteLn(LogFile, 'Text wrapping ENABLED - ContentWidth: ', ContentWidth);
-    Lines := WrapTextAnsiAware(FContent, ContentWidth, FTextWrapping);
-    WriteLn(LogFile, 'After wrapping - Lines count: ', Length(Lines));
-  end
+    Lines := WrapTextAnsiAware(FContent, ContentWidth, FTextWrapping)
   else
-  begin
-    WriteLn(LogFile, 'Text wrapping DISABLED');
     Lines := SplitLines(FContent);
-    WriteLn(LogFile, 'After splitting - Lines count: ', Length(Lines));
-  end;
   
   // Get background and content color codes
   if FUseRGBBackground then
@@ -926,8 +904,6 @@ begin
   // Top border (apply color if specified)
   if FBorderStyle <> bsNone then
   begin
-    WriteLn(LogFile, 'BORDER: Rendering top border - ContentWidth: ', ContentWidth);
-    WriteLn(LogFile, 'BORDER: TopLeft char: "', BorderChars.TopLeft, '"');
     Result := Result + ColorBorderText(BorderChars.TopLeft, FBorderColor, FBorderBackgroundColor, FBorderBackgroundColorRGB, FUseRGBBorderBackground);
 
     if (FTitle <> '') and (Length(FTitle) + 4 <= ContentWidth) then
@@ -963,16 +939,12 @@ begin
        Result := Result + ColorBorderText(HorizontalLine, FBorderColor, FBorderBackgroundColor, FBorderBackgroundColorRGB, FUseRGBBorderBackground);
     end;
 
-    WriteLn(LogFile, 'BORDER: TopRight char: "', BorderChars.TopRight, '"');
     Result := Result + ColorBorderText(BorderChars.TopRight, FBorderColor, FBorderBackgroundColor, FBorderBackgroundColorRGB, FUseRGBBorderBackground) + LineEnding;
-    WriteLn(LogFile, 'BORDER: Top border complete - Total width: ', Utf8DisplayWidth(Result));
   end;
   
   // Content with side borders and background colors
   for I := 0 to High(Lines) do
   begin
-    WriteLn(LogFile, 'BORDER: Line ', I, ' - Content: "', Lines[I], '"');
-    WriteLn(LogFile, 'BORDER: Line ', I, ' - Content display width: ', Utf8DisplayWidth(Lines[I]));
     
     // Left border
     Result := Result + ColorBorderText(BorderChars.Vertical, FBorderColor, FBorderBackgroundColor, FBorderBackgroundColorRGB, FUseRGBBorderBackground);
@@ -982,7 +954,6 @@ begin
     
     // Pad with background-colored spaces
     PadLen := ContentWidth - Utf8DisplayWidth(Lines[I]);
-    WriteLn(LogFile, 'BORDER: Line ', I, ' - PadLen needed: ', PadLen);
     while PadLen > 0 do
     begin
       PaddedLine := PaddedLine + ' ';
@@ -993,9 +964,7 @@ begin
     PaddedLine := PaddedLine + ResetColor;
     Result := Result + PaddedLine;
     
-    WriteLn(LogFile, 'BORDER: Line ', I, ' - Adding right border: "', BorderChars.Vertical, '"');
     Result := Result + ColorBorderText(BorderChars.Vertical, FBorderColor, FBorderBackgroundColor, FBorderBackgroundColorRGB, FUseRGBBorderBackground) + LineEnding;
-    WriteLn(LogFile, 'BORDER: Line ', I, ' - Complete line width: ', Utf8DisplayWidth(Result));
   end;
   
   // Add empty lines if height is specified and we need more lines
@@ -1023,15 +992,7 @@ begin
   HorizontalLine := AnsiString('');
   for I := 1 to ContentWidth do
     HorizontalLine := HorizontalLine + BorderChars.Horizontal;
-  WriteLn(LogFile, 'BORDER: Rendering bottom border - ContentWidth: ', ContentWidth);
-  WriteLn(LogFile, 'BORDER: BottomLeft: "', BorderChars.BottomLeft, '", BottomRight: "', BorderChars.BottomRight, '"');
   Result := Result + ColorBorderText(BorderChars.BottomLeft + HorizontalLine + BorderChars.BottomRight, FBorderColor, FBorderBackgroundColor, FBorderBackgroundColorRGB, FUseRGBBorderBackground);
-  
-  WriteLn(LogFile, '=== TStyle.Render COMPLETE ===');
-  WriteLn(LogFile, 'Final result lines count: ', Length(SplitLines(Result)));
-  WriteLn(LogFile, 'Final result total width: ', Utf8DisplayWidth(Result));
-  WriteLn(LogFile, '');
-  CloseFile(LogFile);
 end;
 
 // Background styling convenience functions

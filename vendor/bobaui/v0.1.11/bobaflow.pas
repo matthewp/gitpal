@@ -296,49 +296,25 @@ var
   CleanLine: string;
   InEscape: Boolean;
   I: Integer;
-  LogFile: TextFile;
 begin
-  // Initialize debug logging
-  AssignFile(LogFile, 'bobaui_wrap_debug.log');
-  if FileExists('bobaui_wrap_debug.log') then
-    Append(LogFile)
-  else
-    Rewrite(LogFile);
-  
-  WriteLn(LogFile, '--- FindWrapPosition START ---');
-  WriteLn(LogFile, 'Line: "', Line, '"');
-  WriteLn(LogFile, 'MaxWidth: ', MaxWidth);
-  WriteLn(LogFile, 'Mode: ', Ord(Mode));
   
   Result := Length(Line);
   if MaxWidth <= 0 then
-  begin
-    WriteLn(LogFile, 'MaxWidth <= 0, returning line length: ', Result);
-    CloseFile(LogFile);
     Exit;
-  end;
   
   CleanLine := StripAnsiEscapes(Line);
-  WriteLn(LogFile, 'CleanLine: "', CleanLine, '"');
-  WriteLn(LogFile, 'CleanLine length: ', Length(CleanLine));
   
   if Length(CleanLine) <= MaxWidth then
-  begin
-    WriteLn(LogFile, 'CleanLine length <= MaxWidth, no wrapping needed, returning: ', Result);
-    CloseFile(LogFile);
     Exit;
-  end;
   
   case Mode of
     twNone:
       begin
         Result := Length(Line); // No wrapping
-        WriteLn(LogFile, 'twNone mode, returning line length: ', Result);
       end;
       
     twChar:
       begin
-        WriteLn(LogFile, 'twChar mode - character-level wrapping');
         // Character-level wrapping - find byte position for display position
         DisplayPos := 0;
         BytePos := 1;
@@ -350,32 +326,25 @@ begin
           begin
             InEscape := True;
             Inc(BytePos, 2);
-            WriteLn(LogFile, 'Started ANSI escape at BytePos: ', BytePos - 2);
           end
           else if InEscape then
           begin
             if Line[BytePos] = 'm' then
-            begin
               InEscape := False;
-              WriteLn(LogFile, 'Ended ANSI escape at BytePos: ', BytePos);
-            end;
             Inc(BytePos);
           end
           else
           begin
             Inc(DisplayPos);
             Inc(BytePos);
-            WriteLn(LogFile, 'DisplayPos: ', DisplayPos, ', BytePos: ', BytePos, ', Char: "', Line[BytePos-1], '"');
           end;
         end;
         
         Result := BytePos - 1;
-        WriteLn(LogFile, 'twChar result: BytePos-1 = ', Result);
       end;
       
     twWord, twAuto:
       begin
-        WriteLn(LogFile, 'twWord/twAuto mode - word-level wrapping');
         // Word-level wrapping - find last word break before MaxWidth
         DisplayPos := 0;
         BytePos := 1;
@@ -388,60 +357,37 @@ begin
           begin
             InEscape := True;
             Inc(BytePos, 2);
-            WriteLn(LogFile, 'Started ANSI escape at BytePos: ', BytePos - 2);
           end
           else if InEscape then
           begin
             if Line[BytePos] = 'm' then
-            begin
               InEscape := False;
-              WriteLn(LogFile, 'Ended ANSI escape at BytePos: ', BytePos);
-            end;
             Inc(BytePos);
           end
           else
           begin
             if IsWordBreakCharacter(Line[BytePos]) then
-            begin
               LastWordBreak := BytePos;
-              WriteLn(LogFile, 'Found word break at BytePos: ', BytePos, ', Char: "', Line[BytePos], '"');
-            end;
             
             Inc(DisplayPos);
-            WriteLn(LogFile, 'DisplayPos: ', DisplayPos, ', BytePos: ', BytePos, ', Char: "', Line[BytePos], '"');
             if DisplayPos > MaxWidth then
-            begin
-              WriteLn(LogFile, 'DisplayPos > MaxWidth, breaking');
               Break;
-            end;
             Inc(BytePos);
           end;
         end;
         
-        WriteLn(LogFile, 'LastWordBreak: ', LastWordBreak);
         if LastWordBreak > 0 then
-        begin
-          Result := LastWordBreak;
-          WriteLn(LogFile, 'Using LastWordBreak: ', Result);
-        end
+          Result := LastWordBreak
         else if Mode = twAuto then
         begin
-          WriteLn(LogFile, 'No word break found, falling back to character wrapping');
-          CloseFile(LogFile);
           Result := FindWrapPosition(Line, MaxWidth, twChar); // Fall back to character wrapping
           Exit;
         end
         else
-        begin
           Result := BytePos - 1;
-          WriteLn(LogFile, 'No word break found, using BytePos-1: ', Result);
-        end;
       end;
   end;
   
-  WriteLn(LogFile, 'Final Result: ', Result);
-  WriteLn(LogFile, '--- FindWrapPosition END ---');
-  CloseFile(LogFile);
 end;
 
 function WrapTextHard(const Text: string; MaxWidth: Integer): TStringArray;
@@ -545,31 +491,14 @@ var
   WrapPos: Integer;
   PreviousState: TAnsiState;
   IndentCount: Integer;
-  LogFile: TextFile;
   CleanCurrentLine: string;
 begin
-  // Initialize debug logging
-  AssignFile(LogFile, 'bobaui_wrap_debug.log');
-  if FileExists('bobaui_wrap_debug.log') then
-    Append(LogFile)
-  else
-    Rewrite(LogFile);
-  
-  WriteLn(LogFile, '=== WrapTextAnsiAware START ===');
-  WriteLn(LogFile, 'Input Text: "', Text, '"');
-  WriteLn(LogFile, 'MaxWidth: ', MaxWidth);
-  WriteLn(LogFile, 'Mode: ', Ord(Mode));
   
   SetLength(Result, 0);
   if MaxWidth <= 0 then
-  begin
-    WriteLn(LogFile, 'MaxWidth <= 0, exiting early');
-    CloseFile(LogFile);
     Exit;
-  end;
   
   Lines := SplitLines(Text);
-  WriteLn(LogFile, 'Split into ', Length(Lines), ' lines');
   
   for I := 0 to High(Lines) do
   begin
@@ -577,46 +506,29 @@ begin
     CleanCurrentLine := StripAnsiEscapes(CurrentLine);
     IndentCount := CountLeadingSpaces(CleanCurrentLine);
     
-    WriteLn(LogFile, 'Processing line ', I, ': "', CurrentLine, '"');
-    WriteLn(LogFile, 'Clean line: "', CleanCurrentLine, '"');
-    WriteLn(LogFile, 'Display width: ', Utf8DisplayWidth(CleanCurrentLine));
-    WriteLn(LogFile, 'IndentCount: ', IndentCount);
-    WriteLn(LogFile, 'Needs wrapping: ', Utf8DisplayWidth(CleanCurrentLine) > MaxWidth);
-    
     while Utf8DisplayWidth(StripAnsiEscapes(CurrentLine)) > MaxWidth do
     begin
       WrapPos := FindWrapPosition(CurrentLine, MaxWidth, Mode);
-      WriteLn(LogFile, 'WrapPos found: ', WrapPos);
       
       if WrapPos > 0 then
       begin
         SetLength(Result, Length(Result) + 1);
         Result[High(Result)] := TrimTrailingSpaces(Copy(CurrentLine, 1, WrapPos));
-        WriteLn(LogFile, 'Added wrapped line: "', Result[High(Result)], '"');
         
         // Extract ANSI state from the wrapped line
         PreviousState := ExtractAnsiState(Result[High(Result)]);
-        WriteLn(LogFile, 'Previous ANSI state - HasForeground: ', PreviousState.HasForeground, ', HasBackground: ', PreviousState.HasBackground);
         
         CurrentLine := Copy(CurrentLine, WrapPos + 1, MaxInt);
-        WriteLn(LogFile, 'Remaining line: "', CurrentLine, '"');
         
         // Apply preserved ANSI state to continuation line
         CurrentLine := ApplyAnsiState(CurrentLine, PreviousState);
-        WriteLn(LogFile, 'After applying ANSI state: "', CurrentLine, '"');
         
         // Preserve indentation for continuation lines
         if IndentCount > 0 then
-        begin
           CurrentLine := PreserveIndentation(Lines[I], CurrentLine);
-          WriteLn(LogFile, 'After preserving indentation: "', CurrentLine, '"');
-        end;
       end
       else
-      begin
-        WriteLn(LogFile, 'WrapPos <= 0, breaking out of wrap loop');
         Break;
-      end;
     end;
     
     // Add remaining part
@@ -624,16 +536,8 @@ begin
     begin
       SetLength(Result, Length(Result) + 1);
       Result[High(Result)] := CurrentLine;
-      WriteLn(LogFile, 'Added final line part: "', Result[High(Result)], '"');
     end;
   end;
-  
-  WriteLn(LogFile, 'Final result has ', Length(Result), ' lines');
-  for I := 0 to High(Result) do
-    WriteLn(LogFile, 'Result[', I, ']: "', Result[I], '"');
-  WriteLn(LogFile, '=== WrapTextAnsiAware END ===');
-  
-  CloseFile(LogFile);
 end;
 
 

@@ -1135,30 +1135,24 @@ begin
   // Default fallback values
   FTerminalWidth := 80;
   FTerminalHeight := 24;
-  DebugLog('DetectTerminalSize: Starting with defaults - Width: ' + IntToStr(FTerminalWidth) + ', Height: ' + IntToStr(FTerminalHeight));
   
   {$IFDEF UNIX}
   // Get actual terminal size using ioctl
   if fpioctl(STDOUT_FILENO, TIOCGWINSZ, @WS) = 0 then
   begin
-    DebugLog('DetectTerminalSize: ioctl success - ws_col: ' + IntToStr(WS.ws_col) + ', ws_row: ' + IntToStr(WS.ws_row));
     if (WS.ws_col > 0) and (WS.ws_row > 0) then
     begin
       FTerminalWidth := WS.ws_col;
       FTerminalHeight := WS.ws_row;
-      DebugLog('DetectTerminalSize: Updated terminal size - Width: ' + IntToStr(FTerminalWidth) + ', Height: ' + IntToStr(FTerminalHeight));
     end
     else
     begin
-      DebugLog('DetectTerminalSize: Invalid terminal size from ioctl, keeping defaults');
     end;
   end
   else
   begin
-    DebugLog('DetectTerminalSize: ioctl failed, keeping defaults');
   end;
   {$ELSE}
-  DebugLog('DetectTerminalSize: Non-Unix platform, using defaults');
   {$ENDIF}
 end;
 
@@ -1269,7 +1263,6 @@ end;
 function TAnsiDisplay.GetWidth: integer;
 begin
   Result := FTerminalWidth;
-  DebugLog('GetWidth called, returning: ' + IntToStr(Result));
 end;
 
 function TAnsiDisplay.GetHeight: integer;

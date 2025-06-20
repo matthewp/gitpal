@@ -465,20 +465,7 @@ var
   I: Integer;
   Command: TDOSMenuCommand;
   DisplayText: string;
-  DebugFile: TextFile;
 begin
-  // Debug logging
-  AssignFile(DebugFile, 'debug_dropdown.log');
-  if FileExists('debug_dropdown.log') then
-    Append(DebugFile)
-  else
-    Rewrite(DebugFile);
-  
-  WriteLn(DebugFile, '=== TDOSDropdown.View START ===');
-  WriteLn(DebugFile, 'Length(FCommands): ', Length(FCommands));
-  WriteLn(DebugFile, 'FSelectedIndex: ', FSelectedIndex);
-  WriteLn(DebugFile, 'FWidth: ', FWidth);
-  WriteLn(DebugFile, 'FHeight: ', FHeight);
   
   SetLength(CommandList, Length(FCommands));
   
@@ -486,41 +473,31 @@ begin
   begin
     Command := FCommands[I];
     DisplayText := Command.GetDisplayText;
-    WriteLn(DebugFile, 'Command ', I, ': "', Command.Text, '" -> "', DisplayText, '"');
-    WriteLn(DebugFile, 'Command ', I, ' IsSeparator: ', Command.IsSeparator);
-    WriteLn(DebugFile, 'Command ', I, ' Enabled: ', Command.Enabled);
     
     if I = FSelectedIndex then
     begin
       // Selected item: white text on blue background (DOS style)
       CommandList[I] := GetRGBColorCode(RGB(255, 255, 255)) + GetRGBColorCode(RGB(0, 0, 170), True) + 
                        ' ' + DisplayText + ' ' + ResetColor;
-      WriteLn(DebugFile, 'Command ', I, ' is SELECTED');
     end
     else if Command.Enabled and not Command.IsSeparator then
     begin
       // Enabled item: black text on gray background
       CommandList[I] := ' ' + DisplayText + ' ';
-      WriteLn(DebugFile, 'Command ', I, ' is ENABLED');
     end
     else if Command.IsSeparator then
     begin
       // Separator: dark gray line
       CommandList[I] := GetRGBColorCode(RGB(128, 128, 128)) + DisplayText + ResetColor;
-      WriteLn(DebugFile, 'Command ', I, ' is SEPARATOR');
     end
     else
     begin
       // Disabled item: dark gray text
       CommandList[I] := GetRGBColorCode(RGB(128, 128, 128)) + ' ' + DisplayText + ' ' + ResetColor;
-      WriteLn(DebugFile, 'Command ', I, ' is DISABLED');
     end;
-    
-    WriteLn(DebugFile, 'CommandList[', I, '] length: ', Length(CommandList[I]));
   end;
   
   Content := JoinVertical(CommandList);
-  WriteLn(DebugFile, 'Content length after JoinVertical: ', Length(Content));
   
   // Use TStyle for borders with DOS-style gray background
   DialogStyle := TStyle.Create;
@@ -536,18 +513,10 @@ begin
     DialogStyle.Width := FWidth;
     DialogStyle.Height := Length(FCommands) + 2; // +2 for borders
     
-    WriteLn(DebugFile, 'DialogStyle.Width: ', DialogStyle.Width);
-    WriteLn(DebugFile, 'DialogStyle.Height: ', DialogStyle.Height);
-    WriteLn(DebugFile, 'DialogStyle.Content length: ', Length(DialogStyle.Content));
-    
     Result := DialogStyle.Render;
-    WriteLn(DebugFile, 'Final Result length: ', Length(Result));
   finally
     DialogStyle.Free;
   end;
-  
-  WriteLn(DebugFile, '=== TDOSDropdown.View END ===');
-  CloseFile(DebugFile);
 end;
 
 function TDOSDropdown.Update(const Msg: TMsg): TDOSDropdown;
@@ -823,26 +792,9 @@ var
   MenuItem: string;
   MenuLine: string;
   ItemLength: Integer;
-  DebugFile: TextFile;
 begin
-  // Debug logging
-  AssignFile(DebugFile, 'debug_menu.log');
-  if FileExists('debug_menu.log') then
-    Append(DebugFile)
-  else
-    Rewrite(DebugFile);
-  
-  WriteLn(DebugFile, '=== TDOSMenu.View START ===');
-  WriteLn(DebugFile, 'FVisible: ', FVisible);
-  WriteLn(DebugFile, 'Length(FItems): ', Length(FItems));
-  WriteLn(DebugFile, 'FSelectedIndex: ', FSelectedIndex);
-  WriteLn(DebugFile, 'FWidth: ', FWidth);
-  
   if not FVisible or (Length(FItems) = 0) then
   begin
-    WriteLn(DebugFile, 'EARLY EXIT: not visible or no items');
-    WriteLn(DebugFile, '=== TDOSMenu.View END (empty) ===');
-    CloseFile(DebugFile);
     Result := '';
     Exit;
   end;
@@ -852,8 +804,6 @@ begin
   // Build the menu line with DOS-style formatting
   for I := 0 to Length(FItems) - 1 do
   begin
-    WriteLn(DebugFile, 'Processing item ', I, ': ', FItems[I].Text);
-    
     // Format menu item as " Text " with proper spacing
     MenuItem := ' ' + FItems[I].Text + ' ';
     
@@ -861,38 +811,28 @@ begin
     begin
       // Selected item: white text on blue background (DOS style)
       MenuItem := GetRGBColorCode(RGB(255, 255, 255)) + GetRGBColorCode(RGB(0, 0, 170), True) + MenuItem + ResetColor;
-      WriteLn(DebugFile, 'Item ', I, ' is SELECTED');
     end
     else if FItems[I].Enabled then
     begin
       // Enabled item: black text on light gray background (DOS style) 
       MenuItem := GetRGBColorCode(RGB(0, 0, 0)) + GetRGBColorCode(RGB(192, 192, 192), True) + MenuItem + ResetColor;
-      WriteLn(DebugFile, 'Item ', I, ' is ENABLED');
     end
     else
     begin
       // Disabled item: dark gray text on light gray background
       MenuItem := GetRGBColorCode(RGB(128, 128, 128)) + GetRGBColorCode(RGB(192, 192, 192), True) + MenuItem + ResetColor;
-      WriteLn(DebugFile, 'Item ', I, ' is DISABLED');
     end;
     
     MenuLine := MenuLine + MenuItem;
-    WriteLn(DebugFile, 'MenuLine length so far: ', Length(MenuLine));
   end;
   
   // Pad the rest of the line with the background color
   ItemLength := Utf8DisplayWidth(StripAnsiEscapes(MenuLine));
-  WriteLn(DebugFile, 'ItemLength before padding: ', ItemLength);
   while ItemLength < FWidth do
   begin
     MenuLine := MenuLine + GetRGBColorCode(RGB(192, 192, 192), True) + ' ' + ResetColor;
     Inc(ItemLength);
   end;
-  
-  WriteLn(DebugFile, 'Final MenuLine length: ', Length(MenuLine));
-  WriteLn(DebugFile, 'Final ItemLength: ', ItemLength);
-  WriteLn(DebugFile, '=== TDOSMenu.View END ===');
-  CloseFile(DebugFile);
   
   Result := MenuLine;
 end;
@@ -905,31 +845,11 @@ var
   Item: TDOSMenuItem;
   SelectedCommand: TDOSMenuCommand;
   NewDropdown: TDOSDropdown;
-  DebugFile: TextFile;
 begin
-  // Debug logging
-  AssignFile(DebugFile, 'debug_menu_update.log');
-  if FileExists('debug_menu_update.log') then
-    Append(DebugFile)
-  else
-    Rewrite(DebugFile);
-  
-  WriteLn(DebugFile, '=== TDOSMenu.Update START ===');
-  WriteLn(DebugFile, 'FVisible: ', FVisible);
-  WriteLn(DebugFile, 'Length(FItems): ', Length(FItems));
-  WriteLn(DebugFile, 'FSelectedIndex: ', FSelectedIndex);
-  WriteLn(DebugFile, 'FDropdownVisible: ', FDropdownVisible);
-  WriteLn(DebugFile, 'HasActiveDropdown: ', HasActiveDropdown);
-  
   Result := Self; // Default: no change
   
   if not FVisible then
-  begin
-    WriteLn(DebugFile, 'EARLY EXIT: not visible');
-    WriteLn(DebugFile, '=== TDOSMenu.Update END (not visible) ===');
-    CloseFile(DebugFile);
     Exit;
-  end;
   
   if Msg is TKeyMsg then
   begin
@@ -948,7 +868,6 @@ begin
     
     // Copy items (deep copy to avoid shared references)
     SetLength(NewMenu.FItems, Length(FItems));
-    WriteLn(DebugFile, 'Copying ', Length(FItems), ' items...');
     for I := 0 to Length(FItems) - 1 do
     begin
       // Create new menu item with same properties
@@ -956,12 +875,7 @@ begin
       
       // Deep copy dropdown if it exists
       if FItems[I].HasDropdown then
-      begin
-        WriteLn(DebugFile, '  Item ', I, ' has dropdown with ', FItems[I].Dropdown.GetCommandCount, ' commands');
         NewMenu.FItems[I].SetDropdown(CopyDropdown(FItems[I].Dropdown));
-        WriteLn(DebugFile, '  Deep copied dropdown for item ', I);
-      end;
-      WriteLn(DebugFile, 'Deep copied item ', I, ': Text="', NewMenu.FItems[I].Text, '"');
     end;
     
     if KeyMsg.IsLeftArrow then
@@ -1075,26 +989,16 @@ begin
       begin
         // Check for hotkeys to select items and show dropdowns
         FoundIndex := NewMenu.FindItemByKey(KeyMsg.Key);
-        WriteLn(DebugFile, 'FindItemByKey(', KeyMsg.Key, ') returned: ', FoundIndex);
         if FoundIndex >= 0 then
         begin
           NewMenu.FSelectedIndex := FoundIndex;
           Item := NewMenu.GetSelectedItem;
-          WriteLn(DebugFile, 'Selected item ', FoundIndex, ': Text="', Item.Text, '"');
-          WriteLn(DebugFile, 'Item has dropdown: ', Item.HasDropdown);
           if Assigned(Item) and Item.HasDropdown then
-          begin
-            WriteLn(DebugFile, 'Showing dropdown...');
             NewMenu.ShowDropdown;
-            WriteLn(DebugFile, 'After ShowDropdown: ActiveDropdown assigned=', Assigned(NewMenu.FActiveDropdown));
-            if Assigned(NewMenu.FActiveDropdown) then
-              WriteLn(DebugFile, 'ActiveDropdown has ', NewMenu.FActiveDropdown.GetCommandCount, ' commands');
-          end;
           Result := NewMenu;
         end
         else
         begin
-          WriteLn(DebugFile, 'No matching item found, freeing NewMenu');
           // If we didn't find a match, free the new menu
           NewMenu.Free;
         end;
@@ -1103,25 +1007,8 @@ begin
     
     // If we didn't create a new menu, free it
     if Result = Self then
-    begin
-      WriteLn(DebugFile, 'Freeing NewMenu (no change)');
       NewMenu.Free;
-    end
-    else
-    begin
-      WriteLn(DebugFile, 'Returning NewMenu with changes');
-      WriteLn(DebugFile, 'NewMenu.FDropdownVisible: ', TDOSMenu(Result).FDropdownVisible);
-      WriteLn(DebugFile, 'NewMenu.HasActiveDropdown: ', TDOSMenu(Result).HasActiveDropdown);
-      WriteLn(DebugFile, 'NewMenu.HasPendingAction: ', TDOSMenu(Result).HasPendingAction);
-    end;
-  end
-  else
-  begin
-    WriteLn(DebugFile, 'Message is not TKeyMsg');
   end;
-  
-  WriteLn(DebugFile, '=== TDOSMenu.Update END ===');
-  CloseFile(DebugFile);
 end;
 
 procedure TDOSMenu.SelectNext;
@@ -1835,7 +1722,6 @@ function TList.Update(const Msg: bobaui.TMsg): TList;
 var
   KeyMsg: bobaui.TKeyMsg;
   NewList: TList;
-  DebugFile: TextFile;
 begin
   Result := Self; // Default: no change
   
