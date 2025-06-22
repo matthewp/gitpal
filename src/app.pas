@@ -102,20 +102,6 @@ begin
     Exit;
   end;
   
-  // If commit has been executed, show the result
-  if FCommitExecuted then
-  begin
-    if FCommitSuccessful then
-    begin
-      Result := AnsiString('✓ Commit successful!');
-    end
-    else
-    begin
-      Result := AnsiString('✗ Commit failed: ') + FCommitErrorMessage;
-    end;
-    Exit;
-  end;
-  
   // Add padding to the content (space before and after)
   PaddedContent := AnsiString(' ') + FCommitMessage + AnsiString(' ');
   
@@ -130,13 +116,24 @@ begin
     Style.Free;
   end;
   
-  // Use JoinVertical to properly space sections
+  // Build initial UI that's always present
   SetLength(Sections, 5);
   Sections[0] := AnsiString('Generated commit message:');
   Sections[1] := AnsiString(''); // Empty line above box
   Sections[2] := BorderedMessage;
   Sections[3] := AnsiString(''); // Empty line below box
   Sections[4] := AnsiString('Accept this commit message?') + #10 + #10 + FList.View;
+  
+  // If commit has been executed, extend the array to append the result
+  if FCommitExecuted then
+  begin
+    SetLength(Sections, 7);
+    Sections[5] := AnsiString(''); // Empty line before result
+    if FCommitSuccessful then
+      Sections[6] := AnsiString('✓ Commit successful!')
+    else
+      Sections[6] := AnsiString('✗ Commit failed: ') + FCommitErrorMessage;
+  end;
   
   Result := bobastyle.JoinVertical(Sections);
 end;
