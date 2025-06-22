@@ -130,9 +130,9 @@ begin
     SetLength(Sections, 7);
     Sections[5] := AnsiString(''); // Empty line before result
     if FCommitSuccessful then
-      Sections[6] := AnsiString('✓ Commit successful!')
+      Sections[6] := bobastyle.ColorText(AnsiString('✓ Commit successful!'), bobastyle.cBrightGreen)
     else
-      Sections[6] := AnsiString('✗ Commit failed: ') + FCommitErrorMessage;
+      Sections[6] := bobastyle.ColorText(AnsiString('✗ Commit failed: ') + FCommitErrorMessage, bobastyle.cBrightRed);
   end;
   
   Result := bobastyle.JoinVertical(Sections);
