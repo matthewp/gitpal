@@ -28,12 +28,25 @@ type
     FCommitExecuted: Boolean;
     FCommitSuccessful: Boolean;
     FCommitErrorMessage: string;
+    FSpinner: bobacomponents.TSpinner;
+    FGenerating: Boolean;
+    FDiffContent: string;
+    FCustomPrompt: string;
+    FGenerationStarted: Boolean;
   public
     constructor Create; overload;
     constructor Create(const ACommitMessage: string); overload;
+    constructor Create(const ADiffContent: string; const ACustomPrompt: string); overload;
     destructor Destroy; override;
     function View: string; override;
     function Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult; override;
+  end;
+  
+  // Custom message for when commit generation is complete
+  TCommitGeneratedMsg = class(bobaui.TMsg)
+  public
+    CommitMessage: string;
+    constructor Create(const ACommitMessage: string);
   end;
 
 // Forward declarations
@@ -41,6 +54,13 @@ type
 procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log'); forward;
 {$ENDIF}
 function ExecuteGitCommit(const CommitMessage: string; out ErrorMessage: string): Boolean; forward;
+function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string): bobaui.TCmd; forward;
+
+constructor TCommitGeneratedMsg.Create(const ACommitMessage: string);
+begin
+  inherited Create;
+  CommitMessage := ACommitMessage;
+end;
 
 constructor TCommitModel.Create;
 begin
@@ -51,6 +71,10 @@ begin
   FCommitExecuted := False;
   FCommitSuccessful := False;
   FCommitErrorMessage := AnsiString('');
+  FGenerating := False;
+  FDiffContent := AnsiString('');
+  FCustomPrompt := AnsiString('');
+  FGenerationStarted := False;
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -59,6 +83,8 @@ begin
   FList.Height := 5;
   FList.ShowBorder := false;
   FList.SelectedColor := bobastyle.cBrightBlue;
+  
+  FSpinner := bobacomponents.TSpinner.Create(bobacomponents.stDot);
 end;
 
 constructor TCommitModel.Create(const ACommitMessage: string);
@@ -70,6 +96,10 @@ begin
   FCommitExecuted := False;
   FCommitSuccessful := False;
   FCommitErrorMessage := AnsiString('');
+  FGenerating := False;
+  FDiffContent := AnsiString('');
+  FCustomPrompt := AnsiString('');
+  FGenerationStarted := False;
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -78,12 +108,40 @@ begin
   FList.Height := 5;
   FList.ShowBorder := false;
   FList.SelectedColor := bobastyle.cBrightBlue;
+  
+  FSpinner := bobacomponents.TSpinner.Create(bobacomponents.stDot);
+end;
+
+constructor TCommitModel.Create(const ADiffContent: string; const ACustomPrompt: string);
+begin
+  inherited Create;
+  FTerminalWidth := 0;  // Will be set by WindowSizeMsg
+  FTerminalHeight := 0; // Will be set by WindowSizeMsg
+  FCommitMessage := AnsiString('');
+  FCommitExecuted := False;
+  FCommitSuccessful := False;
+  FCommitErrorMessage := AnsiString('');
+  FGenerating := True;
+  FDiffContent := ADiffContent;
+  FCustomPrompt := ACustomPrompt;
+  FGenerationStarted := False;
+  
+  FList := bobacomponents.TList.Create;
+  FList.AddItem(AnsiString('Accept'));
+  FList.AddItem(AnsiString('Decline'));
+  FList.Width := 30;
+  FList.Height := 5;
+  FList.ShowBorder := false;
+  FList.SelectedColor := bobastyle.cBrightBlue;
+  
+  FSpinner := bobacomponents.TSpinner.Create(bobacomponents.stDot);
 end;
 
 
 destructor TCommitModel.Destroy;
 begin
   FList.Free;
+  FSpinner.Free;
   inherited Destroy;
 end;
 
@@ -100,6 +158,13 @@ begin
   if FTerminalWidth <= 0 then
   begin
     Result := AnsiString('Detecting terminal size...');
+    Exit;
+  end;
+  
+  // If we're still generating the commit message, show spinner
+  if FGenerating then
+  begin
+    Result := FSpinner.View + AnsiString(' Analyzing staged changes and generating commit message...');
     Exit;
   end;
   
@@ -194,8 +259,11 @@ var
   KeyMsg: bobaui.TKeyMsg;
   WindowMsg: bobaui.TWindowSizeMsg;
   ListSelectionMsg: bobacomponents.TListSelectionMsg;
+  ComponentTickMsg: bobaui.TComponentTickMsg;
+  CommitGeneratedMsg: TCommitGeneratedMsg;
   NewModel: TCommitModel;
   NewList: bobacomponents.TList;
+  NewSpinner: bobacomponents.TSpinner;
 begin
   Result.Model := Self;
   Result.Cmd := nil;
@@ -214,7 +282,7 @@ begin
     begin
       Result.Cmd := bobaui.QuitCmd;
     end
-    else
+    else if not FGenerating then  // Only handle list navigation if not generating
     begin
       // Delegate keys to the list component
       NewList := FList.Update(Msg);
@@ -260,12 +328,59 @@ begin
       Result.Cmd := bobaui.QuitCmd;
     end;
   end
+  else if Msg is bobaui.TComponentTickMsg then
+  begin
+    if FGenerating then
+    begin
+      ComponentTickMsg := bobaui.TComponentTickMsg(Msg);
+      
+      // On first tick, start the generation
+      if not FGenerationStarted then
+      begin
+        FGenerationStarted := True;
+        Result.Cmd := GenerateCommitMessageCmd(FDiffContent, FCustomPrompt);
+      end
+      else
+      begin
+        // Update spinner
+        NewSpinner := FSpinner.Update(Msg);
+        if NewSpinner <> FSpinner then
+        begin
+          NewModel := TCommitModel.Create(FDiffContent, FCustomPrompt);
+          NewModel.FTerminalWidth := FTerminalWidth;
+          NewModel.FTerminalHeight := FTerminalHeight;
+          NewModel.FGenerationStarted := FGenerationStarted;
+          NewModel.FSpinner.Free;
+          NewModel.FSpinner := NewSpinner;
+          Result.Model := NewModel;
+          Result.Cmd := FSpinner.Tick; // Continue animation
+        end;
+      end;
+    end;
+  end
+  else if Msg is TCommitGeneratedMsg then
+  begin
+    CommitGeneratedMsg := TCommitGeneratedMsg(Msg);
+    // Create new model with the generated commit message
+    NewModel := TCommitModel.Create(CommitGeneratedMsg.CommitMessage);
+    NewModel.FTerminalWidth := FTerminalWidth;
+    NewModel.FTerminalHeight := FTerminalHeight;
+    Result.Model := NewModel;
+  end
   else if Msg is bobaui.TWindowSizeMsg then
   begin
     WindowMsg := bobaui.TWindowSizeMsg(Msg);
     // Always update dimensions without recreating model
     FTerminalWidth := WindowMsg.Width;
     FTerminalHeight := WindowMsg.Height;
+    
+    // If we're generating and just got window size, start the generation
+    if FGenerating and (FCommitMessage = '') then
+    begin
+      // Start spinner animation and commit generation
+      Result.Cmd := FSpinner.Tick;
+      // We'll trigger commit generation on the first spinner tick
+    end;
   end;
 end;
 
@@ -473,12 +588,43 @@ begin
   end;
 end;
 
+// Command class for generating commit message asynchronously
+type
+  TGenerateCommitMessageCommand = class(bobaui.TCommand)
+  private
+    FDiffContent: string;
+    FCustomPrompt: string;
+  public
+    constructor Create(const ADiffContent: string; const ACustomPrompt: string);
+    function Execute: bobaui.TMsg; override;
+  end;
+
+constructor TGenerateCommitMessageCommand.Create(const ADiffContent: string; const ACustomPrompt: string);
+begin
+  inherited Create;
+  FDiffContent := ADiffContent;
+  FCustomPrompt := ACustomPrompt;
+end;
+
+function TGenerateCommitMessageCommand.Execute: bobaui.TMsg;
+var
+  CommitMessage: string;
+begin
+  CommitMessage := GenerateCommitMessage(FDiffContent, FCustomPrompt);
+  Result := TCommitGeneratedMsg.Create(CommitMessage);
+end;
+
+// Helper function to create the command
+function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string): bobaui.TCmd;
+begin
+  Result := TGenerateCommitMessageCommand.Create(DiffContent, CustomPrompt);
+end;
+
 procedure RunCommitCommand(const CustomPrompt: string = '');
 var
   Prog: TBobaUIProgram;
   Model: TCommitModel;
   DiffContent: string;
-  CommitMessage: string;
 begin
   // Check if there are staged changes
   DiffContent := GetGitDiff;
@@ -488,18 +634,8 @@ begin
     Exit;
   end;
   
-  // Generate commit message using LLM
-  writeln('Analyzing staged changes and generating commit message...');
-  CommitMessage := GenerateCommitMessage(DiffContent, CustomPrompt);
-  
-  if Pos('Error:', CommitMessage) = 1 then
-  begin
-    writeln(CommitMessage);
-    Exit;
-  end;
-  
-  // Create model with the generated commit message
-  Model := TCommitModel.Create(CommitMessage);
+  // Create model that will show spinner and generate message async
+  Model := TCommitModel.Create(DiffContent, CustomPrompt);
   Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);
   
   Prog.Run;
