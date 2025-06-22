@@ -51,6 +51,7 @@ begin
   FList.Width := 30;
   FList.Height := 5;
   FList.ShowBorder := false;
+  FList.SelectedColor := bobastyle.cBrightBlue;
 end;
 
 constructor TCommitModel.Create(const ACommitMessage: string);
@@ -66,6 +67,7 @@ begin
   FList.Width := 30;
   FList.Height := 5;
   FList.ShowBorder := false;
+  FList.SelectedColor := bobastyle.cBrightBlue;
 end;
 
 
