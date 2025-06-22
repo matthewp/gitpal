@@ -16,7 +16,8 @@ uses
   SysUtils,
   Process;
 
-{$I gitpal-version.inc}
+const
+  AppVersion = '0.0.3';  // Update this when tagging new releases
 
 type
   TCommitModel = class(bobaui.TModel)

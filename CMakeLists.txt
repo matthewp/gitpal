@@ -44,32 +44,6 @@ list(APPEND FPC_FLAGS
 )
 
 
-# Detect version from Git tag (matching Makefile behavior)
-execute_process(
-    COMMAND git describe --exact-match --tags HEAD
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    OUTPUT_VARIABLE GIT_TAG
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-)
-
-# Set version: use git tag if available, otherwise 'development'
-if(GIT_TAG)
-    # Strip 'v' prefix if it exists (e.g., v1.0.0 -> 1.0.0)
-    string(REGEX REPLACE "^v" "" GITPAL_VERSION "${GIT_TAG}")
-else()
-    set(GITPAL_VERSION "development")
-endif()
-
-message(STATUS "Detected version: ${GITPAL_VERSION}")
-
-# Generate version file from in-memory template (no external template file needed)
-set(VERSION_FILE "${CMAKE_CURRENT_BINARY_DIR}/gitpal-version.inc")
-file(WRITE "${VERSION_FILE}" "const AppVersion = '${GITPAL_VERSION}';\n")
-
-# Add include path for version file
-get_filename_component(VERSION_FILE_DIR "${VERSION_FILE}" DIRECTORY)
-list(APPEND FPC_FLAGS "-Fi${VERSION_FILE_DIR}")
 
 # Define source files that the build depends on
 set(GITPAL_SOURCES
@@ -87,7 +61,7 @@ set(GITPAL_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bin/gitpal")
 add_custom_command(
     OUTPUT ${GITPAL_BINARY}
     COMMAND fpc ${FPC_FLAGS} -o${GITPAL_BINARY} ${CMAKE_CURRENT_SOURCE_DIR}/src/app.pas
-    DEPENDS ${GITPAL_SOURCES} ${VERSION_FILE}
+    DEPENDS ${GITPAL_SOURCES}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Compiling gitpal with Free Pascal Compiler"
     VERBATIM
