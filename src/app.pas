@@ -28,6 +28,10 @@ type
     function Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult; override;
   end;
 
+// Forward declarations
+procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log'); forward;
+function ExecuteGitCommit(const CommitMessage: string): Boolean; forward;
+
 constructor TCommitModel.Create;
 begin
   inherited Create;
@@ -105,6 +109,55 @@ begin
   Result := bobastyle.JoinVertical(Sections);
 end;
 
+function ExecuteGitCommit(const CommitMessage: string): Boolean;
+var
+  GitProcess: TProcess;
+  OutputStr: string;
+  BytesRead: longint;
+  Buffer: array[0..2047] of char;
+begin
+  Result := False;
+  GitProcess := TProcess.Create(nil);
+  try
+    GitProcess.Executable := AnsiString('git');
+    GitProcess.Parameters.Add(AnsiString('commit'));
+    GitProcess.Parameters.Add(AnsiString('-m'));
+    GitProcess.Parameters.Add(CommitMessage);
+    GitProcess.Options := [poUsePipes, poStderrToOutPut];
+    GitProcess.Execute;
+    
+    OutputStr := AnsiString('');
+    while GitProcess.Running do
+    begin
+      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
+      if BytesRead > 0 then
+        OutputStr := OutputStr + Copy(Buffer, 1, BytesRead);
+    end;
+    
+    // Read any remaining output
+    repeat
+      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
+      if BytesRead > 0 then
+        OutputStr := OutputStr + Copy(Buffer, 1, BytesRead);
+    until BytesRead <= 0;
+    
+    GitProcess.WaitOnExit;
+    
+    LogToFile('Git commit exit code: ' + IntToStr(GitProcess.ExitStatus));
+    LogToFile('Git commit output: ' + OutputStr);
+    
+    Result := GitProcess.ExitStatus = 0;
+    
+    if Result then
+      writeln('Commit successful!')
+    else
+      writeln('Commit failed: ' + OutputStr);
+      
+  finally
+    GitProcess.Free;
+  end;
+end;
+
 function TCommitModel.Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult;
 var
   KeyMsg: bobaui.TKeyMsg;
@@ -157,11 +210,13 @@ begin
     // Handle list selection message
     ListSelectionMsg := bobacomponents.TListSelectionMsg(Msg);
     
-    // Handle selection and quit
+    // Handle selection
     if ListSelectionMsg.SelectedIndex = 0 then
-      writeln('Accept selected')
-    else
-      writeln('Decline selected');
+    begin
+      // Accept: Execute git commit
+      ExecuteGitCommit(FCommitMessage);
+    end;
+    // Decline: Just exit (no action needed)
       
     Result.Cmd := bobaui.QuitCmd;
   end
@@ -226,6 +281,26 @@ begin
   writeln('');
   writeln('Options:');
   writeln('  --help, -h   Show this help message');
+end;
+
+procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log');
+var
+  LogFile: TextFile;
+  Timestamp: string;
+begin
+  try
+    AssignFile(LogFile, FileName);
+    if FileExists(FileName) then
+      Append(LogFile)
+    else
+      Rewrite(LogFile);
+    
+    Timestamp := FormatDateTime('yyyy-mm-dd hh:nn:ss', Now);
+    WriteLn(LogFile, '[' + Timestamp + '] ' + LogMessage);
+    CloseFile(LogFile);
+  except
+    // Silently ignore logging errors to avoid breaking the main functionality
+  end;
 end;
 
 function GetGitDiff: string;
@@ -299,6 +374,7 @@ begin
                    AnsiString('- Following lines: Detailed description explaining WHAT changed and WHY') + #10 +
                    AnsiString('- Use conventional commit prefixes when appropriate (feat:, fix:, docs:, refactor:, etc.)') + #10 +
                    AnsiString('- Include 1-2 paragraphs describing the changes in detail') + #10 +
+                   AnsiString('- Add blank lines between paragraphs for better readability') + #10 +
                    AnsiString('- Explain the motivation and context behind the changes') + #10 +
                    AnsiString('- Mention any important implementation details or considerations') + #10 +
                    AnsiString('- Use imperative mood throughout (e.g., "Add feature" not "Added feature")') + #10 +
@@ -315,6 +391,12 @@ begin
     Messages[1].Role := models.lmrUser;
     Messages[1].Content := UserPrompt;
     
+    // Log the request for debugging
+    LogToFile('=== AI REQUEST ===');
+    LogToFile('System Prompt: ' + SystemPrompt);
+    LogToFile('User Prompt: ' + UserPrompt);
+    LogToFile('==================');
+    
     // Call ChatCompletion
     Response := GeminiProvider.ChatCompletion(
       GeminiProvider.GetDefaultModel,
@@ -325,9 +407,18 @@ begin
     
     // Extract the response
     if Length(Response.Choices) > 0 then
-      Result := Response.Choices[0].Message.Content
+    begin
+      Result := Response.Choices[0].Message.Content;
+      // Log the response for debugging
+      LogToFile('=== AI RESPONSE ===');
+      LogToFile('Raw Response: ' + Result);
+      LogToFile('===================');
+    end
     else
+    begin
       Result := AnsiString('Error: No response from LLM');
+      LogToFile('ERROR: No response from LLM');
+    end;
       
   finally
     GeminiProvider.Free;
