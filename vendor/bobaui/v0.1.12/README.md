@@ -170,8 +170,7 @@ Commands are **functions** that perform I/O operations and eventually produce me
 ```pascal
 // Examples of commands
 QuitCmd              // Tell framework to exit
-TickCmd(100)         // Schedule a timer tick in 100ms
-ComponentTickCmd     // Schedule component-specific animation
+TickCmd('timer', 100)         // Schedule a component timer tick in 100ms
 HttpRequestCmd       // Make HTTP request (hypothetical)
 ```
 
@@ -201,11 +200,11 @@ begin
           Result.Model := NewModel;
           
           // Return command to schedule timer
-          Result.Cmd := TickCmd(1000); // Will create TTickMsg in 1 second
+          Result.Cmd := TickCmd('timer', 1000); // Will create TComponentTickMsg in 1 second
         end;
     end;
   end
-  else if Msg is TTickMsg then
+  else if Msg is TComponentTickMsg then
   begin
     // Handle the timer tick message
     WriteLn('Timer fired!');
@@ -416,7 +415,7 @@ end;
 
 #### Key Features
 
-- **Self-Contained Animation**: Each spinner manages its own timing using `ComponentTickCmd`
+- **Self-Contained Animation**: Each spinner manages its own timing using `TickCmd`
 - **Multiple Types**: 11 different built-in spinner animations
 - **Component Isolation**: Multiple spinners can run simultaneously without interference
 - **Styling Support**: Integration with BobaUI's styling system
@@ -614,7 +613,7 @@ begin
       // Update component state
       Result.Model := UpdatedModel;
       // Schedule next tick to continue animation
-      Result.Cmd := ComponentTickCmd('my-spinner', 100); // 100ms interval
+      Result.Cmd := TickCmd('my-spinner', 100); // 100ms interval
     end;
   end;
 end;
@@ -629,11 +628,11 @@ end;
 - **Component Isolation**: Multiple animated components don't interfere with each other
 - **Resource Efficient**: Components only consume CPU when actually animating
 
-To start a tick-based animation, return a `ComponentTickCmd` from your Update function:
+To start a tick-based animation, return a `TickCmd` from your Update function:
 
 ```pascal
 // Start animation with 200ms intervals
-Result.Cmd := ComponentTickCmd('my-component', 200);
+Result.Cmd := TickCmd('my-component', 200);
 ```
 
 ### Animation Best Practices
@@ -643,10 +642,10 @@ Result.Cmd := ComponentTickCmd('my-component', 200);
 2. **Timing Consistency**: Use consistent tick intervals for smooth animations:
    ```pascal
    // Good: Consistent timing
-   Result.Cmd := ComponentTickCmd('my-component', 33); // ~30 FPS
+   Result.Cmd := TickCmd('my-component', 33); // ~30 FPS
    
    // Consider your needs: faster for smooth, slower for efficiency
-   Result.Cmd := ComponentTickCmd('spinner', 100);     // 10 FPS for simple spinner
+   Result.Cmd := TickCmd('spinner', 100);     // 10 FPS for simple spinner
    ```
 
 3. **State Management**: Keep animation state (like time, position, etc.) in your model and create new model instances when the state changes.
@@ -693,7 +692,7 @@ begin
       Result.Model := NewModel;
       
       // Schedule next tick to continue animation
-      Result.Cmd := ComponentTickCmd('gradient', 33);
+      Result.Cmd := TickCmd('gradient', 33);
     end;
   end;
 end;

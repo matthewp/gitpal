@@ -363,13 +363,7 @@ begin
   Model := TCommitModel.Create(CommitMessage);
   Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);
   
-  // Set global program reference
-  GlobalProgram := Pointer(Prog);
-  
   Prog.Run;
-  
-  // Cleanup
-  GlobalProgram := nil;
   Prog.Free;
 end;
 

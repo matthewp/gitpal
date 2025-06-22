@@ -26,6 +26,17 @@ type
     property ListId: string read FListId;
   end;
 
+  // List selection command
+  TListSelectionCommand = class(bobaui.TCommand)
+  private
+    FIndex: Integer;
+    FItem: string;
+    FListId: string;
+  public
+    constructor Create(AIndex: Integer; const AItem: string; const AListId: string = '');
+    function Execute: bobaui.TMsg; override;
+  end;
+
   TSpinnerType = (
     stLine,
     stDot,
@@ -312,23 +323,24 @@ end;
 
 // Component command functions
 
-// Global variables for ListSelectionCmd parameters
-var
-  PendingListSelectionIndex: Integer = 0;
-  PendingListSelectionItem: string = '';
-  PendingListSelectionId: string = '';
-
-function DoListSelectionCmd: bobaui.TMsg; cdecl;
-begin
-  Result := TListSelectionMsg.Create(PendingListSelectionIndex, PendingListSelectionItem, PendingListSelectionId);
-end;
-
 function ListSelectionCmd(Index: Integer; const Item: string; const ListId: string = ''): bobaui.TCmd;
 begin
-  PendingListSelectionIndex := Index;
-  PendingListSelectionItem := Item;
-  PendingListSelectionId := ListId;
-  Result := @DoListSelectionCmd;
+  Result := TListSelectionCommand.Create(Index, Item, ListId);
+end;
+
+// TListSelectionCommand implementation
+
+constructor TListSelectionCommand.Create(AIndex: Integer; const AItem: string; const AListId: string);
+begin
+  inherited Create;
+  FIndex := AIndex;
+  FItem := AItem;
+  FListId := AListId;
+end;
+
+function TListSelectionCommand.Execute: bobaui.TMsg;
+begin
+  Result := TListSelectionMsg.Create(FIndex, FItem, FListId);
 end;
 
 // TDOSMenuCommand implementation
@@ -1569,7 +1581,7 @@ end;
 function TSpinner.Tick: TCmd;
 begin
   // Return a command that will schedule this spinner's next tick
-  Result := ComponentTickCmd('spinner' + IntToStr(FId), 100); // 100ms interval
+  Result := TickCmd('spinner' + IntToStr(FId), 100); // 100ms interval
 end;
 
 function TSpinner.WithStyle(AStyle: TStyle): TSpinner;
