@@ -4,6 +4,10 @@ program app;
 {$codepage UTF8}
 {$H+}
 
+{* Commented out debug logging
+{$DEFINE GITPAL_DEBUG} // Enable debug logging
+*}
+
 uses
   bobaui,
   bobastyle,
@@ -29,7 +33,9 @@ type
   end;
 
 // Forward declarations
+{$IFDEF GITPAL_DEBUG}
 procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log'); forward;
+{$ENDIF}
 function ExecuteGitCommit(const CommitMessage: string): Boolean; forward;
 
 constructor TCommitModel.Create;
@@ -143,8 +149,10 @@ begin
     
     GitProcess.WaitOnExit;
     
+    {$IFDEF GITPAL_DEBUG}
     LogToFile('Git commit exit code: ' + IntToStr(GitProcess.ExitStatus));
     LogToFile('Git commit output: ' + OutputStr);
+    {$ENDIF}
     
     Result := GitProcess.ExitStatus = 0;
     
@@ -283,6 +291,7 @@ begin
   writeln('  --help, -h   Show this help message');
 end;
 
+{$IFDEF GITPAL_DEBUG}
 procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log');
 var
   LogFile: TextFile;
@@ -302,6 +311,7 @@ begin
     // Silently ignore logging errors to avoid breaking the main functionality
   end;
 end;
+{$ENDIF}
 
 function GetGitDiff: string;
 var
@@ -392,10 +402,12 @@ begin
     Messages[1].Content := UserPrompt;
     
     // Log the request for debugging
+    {$IFDEF GITPAL_DEBUG}
     LogToFile('=== AI REQUEST ===');
     LogToFile('System Prompt: ' + SystemPrompt);
     LogToFile('User Prompt: ' + UserPrompt);
     LogToFile('==================');
+    {$ENDIF}
     
     // Call ChatCompletion
     Response := GeminiProvider.ChatCompletion(
@@ -410,14 +422,18 @@ begin
     begin
       Result := Response.Choices[0].Message.Content;
       // Log the response for debugging
+      {$IFDEF GITPAL_DEBUG}
       LogToFile('=== AI RESPONSE ===');
       LogToFile('Raw Response: ' + Result);
       LogToFile('===================');
+      {$ENDIF}
     end
     else
     begin
       Result := AnsiString('Error: No response from LLM');
+      {$IFDEF GITPAL_DEBUG}
       LogToFile('ERROR: No response from LLM');
+      {$ENDIF}
     end;
       
   finally
