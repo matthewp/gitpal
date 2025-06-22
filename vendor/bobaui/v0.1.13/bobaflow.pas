@@ -76,7 +76,7 @@ begin
   begin
     if (S[P] = #10) or (S[P] = #13) then
     begin
-      if P > Start then
+      if P >= Start then
       begin
         SetLength(Lines, LineCount + 1);
         Lines[LineCount] := Copy(S, Start, P - Start);
@@ -531,12 +531,9 @@ begin
         Break;
     end;
     
-    // Add remaining part
-    if Length(CurrentLine) > 0 then
-    begin
-      SetLength(Result, Length(Result) + 1);
-      Result[High(Result)] := CurrentLine;
-    end;
+    // Add remaining part (including empty lines to preserve blank lines)
+    SetLength(Result, Length(Result) + 1);
+    Result[High(Result)] := CurrentLine;
   end;
 end;
 

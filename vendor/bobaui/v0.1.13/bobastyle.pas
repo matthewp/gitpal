@@ -477,14 +477,20 @@ begin
   Len := Length(S);
   SetLength(Lines, 0);
   P := 1;
+  {$IFDEF BOBAUI_DEBUG}
+  BDebugLog('SplitLines: Input length=' + IntToStr(Len));
+  {$ENDIF}
   while P <= Len do
   begin
     if (S[P] = #10) or (S[P] = #13) then
     begin
-      if P > Start then
+      if P >= Start then
       begin
         SetLength(Lines, LineCount + 1);
         Lines[LineCount] := Copy(S, Start, P - Start);
+        {$IFDEF BOBAUI_DEBUG}
+        BDebugLog('SplitLines: Added line[' + IntToStr(LineCount) + ']="' + Lines[LineCount] + '"');
+        {$ENDIF}
         Inc(LineCount);
       end;
       // Handle CRLF
@@ -498,7 +504,13 @@ begin
   begin
     SetLength(Lines, LineCount + 1);
     Lines[LineCount] := Copy(S, Start, Len - Start + 1);
+    {$IFDEF BOBAUI_DEBUG}
+    BDebugLog('SplitLines: Added final line[' + IntToStr(LineCount) + ']="' + Lines[LineCount] + '"');
+    {$ENDIF}
   end;
+  {$IFDEF BOBAUI_DEBUG}
+  BDebugLog('SplitLines: Result count=' + IntToStr(Length(Lines)));
+  {$ENDIF}
   Result := Lines;
 end;
 
