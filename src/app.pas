@@ -24,6 +24,9 @@ type
     FTerminalWidth, FTerminalHeight: integer;
     FList: bobacomponents.TList;
     FCommitMessage: string;
+    FCommitExecuted: Boolean;
+    FCommitSuccessful: Boolean;
+    FCommitErrorMessage: string;
   public
     constructor Create; overload;
     constructor Create(const ACommitMessage: string); overload;
@@ -36,7 +39,7 @@ type
 {$IFDEF GITPAL_DEBUG}
 procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log'); forward;
 {$ENDIF}
-function ExecuteGitCommit(const CommitMessage: string): Boolean; forward;
+function ExecuteGitCommit(const CommitMessage: string; out ErrorMessage: string): Boolean; forward;
 
 constructor TCommitModel.Create;
 begin
@@ -44,6 +47,9 @@ begin
   FTerminalWidth := 0;  // Will be set by WindowSizeMsg
   FTerminalHeight := 0; // Will be set by WindowSizeMsg
   FCommitMessage := AnsiString('');
+  FCommitExecuted := False;
+  FCommitSuccessful := False;
+  FCommitErrorMessage := AnsiString('');
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -60,6 +66,9 @@ begin
   FTerminalWidth := 0;  // Will be set by WindowSizeMsg
   FTerminalHeight := 0; // Will be set by WindowSizeMsg
   FCommitMessage := ACommitMessage;
+  FCommitExecuted := False;
+  FCommitSuccessful := False;
+  FCommitErrorMessage := AnsiString('');
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -84,11 +93,26 @@ var
   BorderedMessage: string;
   PaddedContent: string;
   Sections: array of string;
+  SectionCount: integer;
 begin
   // Handle initial state gracefully when terminal size is unknown
   if FTerminalWidth <= 0 then
   begin
     Result := AnsiString('Detecting terminal size...');
+    Exit;
+  end;
+  
+  // If commit has been executed, show the result
+  if FCommitExecuted then
+  begin
+    if FCommitSuccessful then
+    begin
+      Result := AnsiString('✓ Commit successful!');
+    end
+    else
+    begin
+      Result := AnsiString('✗ Commit failed: ') + FCommitErrorMessage;
+    end;
     Exit;
   end;
   
@@ -117,7 +141,7 @@ begin
   Result := bobastyle.JoinVertical(Sections);
 end;
 
-function ExecuteGitCommit(const CommitMessage: string): Boolean;
+function ExecuteGitCommit(const CommitMessage: string; out ErrorMessage: string): Boolean;
 var
   GitProcess: TProcess;
   OutputStr: string;
@@ -125,6 +149,7 @@ var
   Buffer: array[0..2047] of char;
 begin
   Result := False;
+  ErrorMessage := AnsiString('');
   GitProcess := TProcess.Create(nil);
   try
     GitProcess.Executable := AnsiString('git');
@@ -158,10 +183,8 @@ begin
     
     Result := GitProcess.ExitStatus = 0;
     
-    if Result then
-      writeln('Commit successful!')
-    else
-      writeln('Commit failed: ' + OutputStr);
+    if not Result then
+      ErrorMessage := OutputStr;
       
   finally
     GitProcess.Free;
@@ -185,6 +208,11 @@ begin
     
     // Handle 'q' to quit
     if (KeyMsg.Key = 'q') or (KeyMsg.Key = 'Q') then
+    begin
+      Result.Cmd := bobaui.QuitCmd;
+    end
+    // If commit was executed, any key should quit
+    else if FCommitExecuted then
     begin
       Result.Cmd := bobaui.QuitCmd;
     end
@@ -223,12 +251,16 @@ begin
     // Handle selection
     if ListSelectionMsg.SelectedIndex = 0 then
     begin
-      // Accept: Execute git commit
-      ExecuteGitCommit(FCommitMessage);
+      // Accept: Execute git commit and update state
+      FCommitSuccessful := ExecuteGitCommit(FCommitMessage, FCommitErrorMessage);
+      FCommitExecuted := True;
+      // Don't quit immediately, let the view show the result first
+    end
+    else
+    begin
+      // Decline: Just exit
+      Result.Cmd := bobaui.QuitCmd;
     end;
-    // Decline: Just exit (no action needed)
-      
-    Result.Cmd := bobaui.QuitCmd;
   end
   else if Msg is bobaui.TWindowSizeMsg then
   begin
