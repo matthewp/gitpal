@@ -9,6 +9,17 @@ An AI-powered git assistant CLI tool written in Pascal that analyzes your git ch
 - **Multiple LLM support**: Connect to various AI providers via [models.pas](https://github.com/matthewjharper/models.pas)
 - **Cross-platform**: Supports macOS, Linux, Windows, and FreeBSD
 
+## Installation
+
+### Package Managers
+
+#### Homebrew (macOS/Linux)
+
+```bash
+brew tap matthewp/gitpal https://git.sr.ht/~matthewp/homebrew-gitpal
+brew install gitpal
+```
+
 ## Building from Source
 
 ### Prerequisites
@@ -48,9 +59,8 @@ The project automatically detects and configures:
 
 - **OpenSSL 1.1**: Required for HTTPS API calls to LLM providers
 - **Vendor dependencies**: Includes bobaui (TUI) and models.pas (LLM client)
-- **Version information**: Generated from Git tags or defaults to 'development'
 
-### Installation
+### Installing from Source
 
 After building, you can install gitpal system-wide:
 
@@ -110,9 +120,6 @@ The project uses:
 ```
 src/
 └── app.pas              # Main application logic
-
-build/
-└── gitpal-version.inc   # Version information (generated during build)
 
 vendor/
 ├── bobaui/             # TUI framework
