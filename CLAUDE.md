@@ -59,6 +59,40 @@ finally
 end;
 ```
 
+### Forward Declarations
+When functions call each other or need to be ordered differently than their natural dependency order, use forward declarations (similar to function prototypes in C):
+
+```pascal
+// Forward declarations after type definitions
+procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log'); forward;
+function ExecuteGitCommit(const CommitMessage: string): Boolean; forward;
+
+// Now functions can be implemented in any order and call each other
+function TCommitModel.Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult;
+begin
+  // Can call ExecuteGitCommit even though it's implemented later
+  ExecuteGitCommit(FCommitMessage);
+end;
+
+// Actual implementations
+procedure LogToFile(const LogMessage: string; const FileName: string);
+begin
+  // Implementation here
+end;
+
+function ExecuteGitCommit(const CommitMessage: string): Boolean;
+begin
+  // Can call LogToFile here
+  LogToFile('Executing commit...');
+end;
+```
+
+**Best practices:**
+- Place forward declarations after type definitions but before any implementations
+- Use forward declarations to solve circular dependencies and ordering issues
+- The forward declaration must exactly match the implementation signature
+- Particularly useful for utility functions that need to be called from multiple places
+
 ## Dependencies and Build Requirements
 
 ### OpenSSL Version Requirements
@@ -128,4 +162,4 @@ This process will:
 4. Requires updating Makefile to use new version path
 5. Optionally remove old version directories
 
-**Current version**: v0.1.6 (located in `vendor/bobaui/v0.1.6/`)
+**Current version**: v0.1.12 (located in `vendor/bobaui/v0.1.12/`)
