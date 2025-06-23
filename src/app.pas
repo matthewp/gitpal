@@ -16,7 +16,7 @@ uses
   SyncObjs;
 
 const
-  AppVersion = '0.0.3';  // Update this when tagging new releases
+  AppVersion = '0.0.5';  // Update this when tagging new releases
 
 type
   // Forward declarations
