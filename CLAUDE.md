@@ -162,4 +162,33 @@ This process will:
 4. Requires updating Makefile to use new version path
 5. Optionally remove old version directories
 
-**Current version**: v0.1.12 (located in `vendor/bobaui/v0.1.12/`)
+**Current version**: v0.1.15 (located in `vendor/bobaui/v0.1.15/`)
+
+## Release Process
+
+To create a new release of GitPal:
+
+1. **Update version number** in `src/app.pas`:
+   ```pascal
+   const
+     AppVersion = '0.0.6';  // Update this when tagging new releases
+   ```
+
+2. **Create and push git tag**:
+   ```bash
+   git add src/app.pas
+   git commit -m "feat: Bump version to 0.0.6"
+   git tag v0.0.6
+   git push origin main
+   git push origin v0.0.6
+   ```
+
+3. **CI/CD automation**: The `.build.yml` GitHub Actions workflow will automatically:
+   - Build binaries for macOS and Linux
+   - Create a GitHub release
+   - Upload binaries as release assets
+   - Update Homebrew formula (if configured)
+
+**Version history**:
+- v0.0.5: Current stable version
+- v0.0.6: Next version (cursor hiding improvements)
