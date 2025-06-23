@@ -151,6 +151,8 @@ var
 procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log'); forward;
 {$ENDIF}
 function ExecuteGitCommit(const CommitMessage: string; out ErrorMessage: string): Boolean; forward;
+function ExecuteGitAdd(out ErrorMessage: string): Boolean; forward;
+function HasUnstagedChanges: Boolean; forward;
 function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''): string; forward;
 function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string): bobaui.TCmd; forward;
 
@@ -667,6 +669,55 @@ begin
   end;
 end;
 
+function ExecuteGitAdd(out ErrorMessage: string): Boolean;
+var
+  GitProcess: TProcess;
+  OutputStr: string;
+  BytesRead: longint;
+  Buffer: array[0..2047] of char;
+begin
+  Result := False;
+  ErrorMessage := AnsiString('');
+  GitProcess := TProcess.Create(nil);
+  try
+    GitProcess.Executable := AnsiString('git');
+    GitProcess.Parameters.Add(AnsiString('add'));
+    GitProcess.Parameters.Add(AnsiString('.'));
+    GitProcess.Options := [poUsePipes, poStderrToOutPut];
+    GitProcess.Execute;
+    
+    OutputStr := AnsiString('');
+    while GitProcess.Running do
+    begin
+      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
+      if BytesRead > 0 then
+        OutputStr := OutputStr + Copy(Buffer, 1, BytesRead);
+    end;
+    
+    // Read any remaining output
+    repeat
+      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
+      if BytesRead > 0 then
+        OutputStr := OutputStr + Copy(Buffer, 1, BytesRead);
+    until BytesRead <= 0;
+    
+    GitProcess.WaitOnExit;
+    
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('Git add exit code: ' + IntToStr(GitProcess.ExitStatus));
+    LogToFile('Git add output: ' + OutputStr);
+    {$ENDIF}
+    
+    Result := GitProcess.ExitStatus = 0;
+    
+    if not Result then
+      ErrorMessage := OutputStr;
+      
+  finally
+    GitProcess.Free;
+  end;
+end;
+
 function TCommitModel.Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult;
 var
   KeyMsg: bobaui.TKeyMsg;
@@ -886,12 +937,14 @@ begin
   writeln('  using AI. You can review and accept or decline the suggestion.');
   writeln('');
   writeln('Options:');
+  writeln('  --stage          Stage all changes before generating commit message');
   writeln('  --prompt <text>  Add custom instructions to the AI prompt');
   writeln('  --help, -h       Show this help message');
   writeln('');
   writeln('Examples:');
   writeln('  gitpal commit');
-  writeln('  gitpal commit --prompt "Focus on performance improvements"');
+  writeln('  gitpal commit --stage');
+  writeln('  gitpal commit --stage --prompt "Focus on performance improvements"');
   writeln('  gitpal commit --prompt "Don''t mention specific technology names"');
 end;
 
@@ -965,6 +1018,50 @@ begin
     
     GitProcess.WaitOnExit;
     Result := OutputStr;
+  finally
+    GitProcess.Free;
+  end;
+end;
+
+function HasUnstagedChanges: Boolean;
+var
+  GitProcess: TProcess;
+  OutputStr: string;
+  BytesRead: longint;
+  Buffer: array[0..2047] of char;
+begin
+  Result := False;
+  GitProcess := TProcess.Create(nil);
+  try
+    GitProcess.Executable := AnsiString('git');
+    GitProcess.Parameters.Add(AnsiString('diff'));
+    GitProcess.Parameters.Add(AnsiString('--name-only'));
+    GitProcess.Options := [poUsePipes, poStderrToOutPut];
+    GitProcess.Execute;
+    
+    OutputStr := AnsiString('');
+    while GitProcess.Running do
+    begin
+      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
+      if BytesRead > 0 then
+        OutputStr := OutputStr + Copy(AnsiString(Buffer), 1, BytesRead);
+    end;
+    
+    // Read any remaining output
+    repeat
+      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
+      if BytesRead > 0 then
+        OutputStr := OutputStr + Copy(AnsiString(Buffer), 1, BytesRead);
+    until BytesRead <= 0;
+    
+    GitProcess.WaitOnExit;
+    
+    // If there's any output, there are unstaged changes
+    Result := (GitProcess.ExitStatus = 0) and (Trim(OutputStr) <> '');
+    
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('HasUnstagedChanges: ' + BoolToStr(Result) + ', output: ' + OutputStr);
+    {$ENDIF}
   finally
     GitProcess.Free;
   end;
@@ -1092,21 +1189,46 @@ begin
   Result := TGenerateCommitMessageCommand.Create(DiffContent, CustomPrompt);
 end;
 
-procedure RunCommitCommand(const CustomPrompt: string = '');
+procedure RunCommitCommand(const CustomPrompt: string = ''; const StageChanges: Boolean = False);
 var
   Prog: TBobaUIProgram;
   Model: TCommitModel;
   DiffContent: string;
+  ErrorMessage: string;
 begin
   {$IFDEF GITPAL_DEBUG}
-  LogToFile('RunCommitCommand: Starting commit command with custom prompt: ' + CustomPrompt);
+  LogToFile('RunCommitCommand: Starting commit command with custom prompt: ' + CustomPrompt + ', stage changes: ' + BoolToStr(StageChanges));
   {$ENDIF}
+  
+  // Handle staging if requested
+  if StageChanges then
+  begin
+    // Check if there are unstaged changes first
+    if not HasUnstagedChanges then
+    begin
+      writeln('No unstaged changes found to stage.');
+      // Continue to check for already staged changes
+    end
+    else
+    begin
+      writeln('Staging changes...');
+      if not ExecuteGitAdd(ErrorMessage) then
+      begin
+        writeln('Error staging changes: ', ErrorMessage);
+        Exit;
+      end;
+      writeln('Changes staged successfully.');
+    end;
+  end;
   
   // Check if there are staged changes
   DiffContent := GetGitDiff;
   if DiffContent = '' then
   begin
-    writeln('No staged changes found. Use "git add" to stage changes before generating a commit message.');
+    if StageChanges then
+      writeln('No changes to commit after staging.')
+    else
+      writeln('No staged changes found. Use "git add" to stage changes or use --stage flag to stage all changes.');
     Exit;
   end;
   
@@ -1152,12 +1274,14 @@ end;
 var
   Command: string;
   CustomPrompt: string;
+  StageChanges: Boolean;
   i: integer;
   ShowMainHelp: boolean;
 begin
   ShowMainHelp := false;
   Command := AnsiString('');
   CustomPrompt := AnsiString('');
+  StageChanges := False;
   
   // Parse command line arguments
   if ParamCount = 0 then
@@ -1201,6 +1325,10 @@ begin
           Halt(1);
         end;
       end
+      else if ParamStr(i) = '--stage' then
+      begin
+        StageChanges := True;
+      end
       else if (Command = AnsiString('')) and (ParamStr(i)[1] <> '-') then
         Command := AnsiString(ParamStr(i));
       
@@ -1216,7 +1344,7 @@ begin
   end;
   
   if Command = AnsiString('commit') then
-    RunCommitCommand(CustomPrompt)
+    RunCommitCommand(CustomPrompt, StageChanges)
   else if Command = AnsiString('changelog') then
     RunChangelogCommand
   else
