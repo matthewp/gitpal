@@ -4,7 +4,6 @@ program app;
 {$codepage UTF8}
 {$H+}
 
-{$DEFINE GITPAL_DEBUG} // Enable debug logging
 
 uses
   bobaui,

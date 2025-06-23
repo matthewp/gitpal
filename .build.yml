@@ -1,0 +1,118 @@
+image: alpine/edge
+sources:
+- https://git.sr.ht/~matthewp/gitpal
+- git@git.sr.ht:~matthewp/homebrew-gitpal
+packages:
+- fpc
+- cmake
+- openssl-dev
+- hut
+- zip
+- curl
+- git
+- coreutils
+secrets:
+- 1af4b221-b0e3-4b02-99d5-b710d340983a # hut config
+tasks:
+  - test: |
+      cd gitpal
+      cmake -B build
+      cmake --build build
+      # Basic smoke test
+      ./bin/gitpal --help
+  - build: |
+      cd gitpal
+      tag=$(git describe --exact-match 2>/dev/null || true)
+      if [ -z "$tag" ]; then
+        echo "Current commit is not a tag; not building anything"
+      else
+        version=$(echo "$tag" | tr -d v)
+        echo "Building release for version $version"
+        
+        # Build the project
+        cmake -B build
+        cmake --build build
+        
+        # Create release archive
+        mkdir -p "gitpal-$version"
+        cp -r src/ vendor/ CMakeLists.txt cmake_uninstall.cmake.in README.md "gitpal-$version/"
+        zip -r "gitpal-$version.zip" "gitpal-$version/"
+        
+        # Upload release artifact
+        hut -r git.sr.ht/~matthewp/gitpal git artifact upload "gitpal-$version.zip" --config ~/.hut-config
+        
+        echo "Release artifact uploaded successfully"
+      fi
+  - update-homebrew: |
+      cd gitpal
+      tag=$(git describe --exact-match 2>/dev/null || true)
+      if [ -z "$tag" ]; then
+        echo "Current commit is not a tag; skipping Homebrew update"
+      else
+        version=$(echo "$tag" | tr -d v)
+        echo "Updating Homebrew formula for version $version"
+        
+        # Download the release and calculate SHA256
+        release_url="https://git.sr.ht/~matthewp/gitpal/refs/download/v$version/gitpal-$version.zip"
+        echo "Downloading release from: $release_url"
+        
+        # Wait a moment for the artifact to be available
+        sleep 10
+        
+        # Download and calculate SHA
+        curl -L -o "gitpal-$version.zip" "$release_url"
+        sha256=$(sha256sum "gitpal-$version.zip" | cut -d' ' -f1)
+        echo "SHA256: $sha256"
+        
+        # Update the Homebrew formula
+        cd ../homebrew-gitpal
+        
+        # Configure git
+        git config user.name "GitPal Release Bot"
+        git config user.email "releases@matthewphillips.info"
+        
+        # Update the formula file
+        cat > Formula/gitpal.rb << EOF
+class Gitpal < Formula
+  desc "AI-powered git assistant CLI tool"
+  homepage "https://sr.ht/~matthewp/gitpal/"
+  url "$release_url"
+  sha256 "$sha256"
+  license "MIT"
+  
+  depends_on "fpc"
+  depends_on "cmake"
+  depends_on "openssl@1.1"
+  
+  def install
+    # Configure build with OpenSSL 1.1
+    system "cmake", "-B", "build", 
+           "-DCMAKE_INSTALL_PREFIX=#{prefix}",
+           "-DOPENSSL_ROOT_DIR=#{Formula["openssl@1.1"].opt_prefix}",
+           *std_cmake_args
+    
+    # Build the project
+    system "cmake", "--build", "build"
+    
+    # Install the binary
+    bin.install "bin/gitpal"
+  end
+  
+  test do
+    system "#{bin}/gitpal", "--version"
+    system "#{bin}/gitpal", "--help"
+  end
+end
+EOF
+        
+        # Commit and push the updated formula
+        git add Formula/gitpal.rb
+        git commit -m "Update gitpal to version $version"
+        git push origin main
+        
+        echo "Homebrew formula updated and pushed successfully"
+      fi
+triggers:
+  - action: email
+    condition: always
+    to: Matthew Phillips <matthew@matthewphillips.info>
