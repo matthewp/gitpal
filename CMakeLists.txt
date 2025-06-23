@@ -13,7 +13,8 @@ set(FPC_FLAGS
 set(VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
 list(APPEND FPC_FLAGS
     "-Fu${VENDOR_DIR}/bobaui/v0.1.15"  # Path for bobaui units
-    "-Fu${VENDOR_DIR}/models.pas"      # Path for models units
+    "-Fu${VENDOR_DIR}/models.pas/v0.0.3"  # Path for models units  
+    "-Fi${VENDOR_DIR}/models.pas/v0.0.3"  # Include path for models units
     "-Fu${CMAKE_CURRENT_SOURCE_DIR}/src"  # Source directory
 )
 
@@ -47,7 +48,10 @@ list(APPEND FPC_FLAGS
 
 # Define source files that the build depends on
 set(GITPAL_SOURCES
-    src/app.pas
+    src/gitpal.pas
+    src/command_commit.pas
+    src/command_changelog.pas
+    src/git.pas
     # Add other source dependencies here as needed
 )
 
@@ -60,7 +64,7 @@ set(GITPAL_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bin/gitpal")
 # Custom command to compile with FPC
 add_custom_command(
     OUTPUT ${GITPAL_BINARY}
-    COMMAND fpc ${FPC_FLAGS} -o${GITPAL_BINARY} ${CMAKE_CURRENT_SOURCE_DIR}/src/app.pas
+    COMMAND fpc ${FPC_FLAGS} -o${GITPAL_BINARY} ${CMAKE_CURRENT_SOURCE_DIR}/src/gitpal.pas
     DEPENDS ${GITPAL_SOURCES}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Compiling gitpal with Free Pascal Compiler"

@@ -1,22 +1,22 @@
-program app;
+unit command_commit;
 
 {$mode objfpc}
 {$codepage UTF8}
 {$H+}
 
+interface
 
 uses
   bobaui,
   bobastyle,
   bobacomponents,
   models,
+  gemini_provider,
+  git,
   SysUtils,
   Process,
   Classes,
   SyncObjs;
-
-const
-  AppVersion = '0.0.7';  // Update this when tagging new releases
 
 type
   // Forward declarations
@@ -49,6 +49,9 @@ type
     FCurrentOperation: TAsyncOperation;
     FOperationId: string;
     FCursorHidden: Boolean;
+    // Streaming fields
+    FStreamingText: string;
+    FIsStreaming: Boolean;
     
     procedure StartCommitGeneration;
     procedure CancelCurrentOperation;
@@ -100,6 +103,17 @@ type
                      const AErrorMessage: string = '');
   end;
 
+  // Streaming chunk message for real-time updates
+  TAsyncStreamingChunkMsg = class(TAsyncResultMsg)
+  private
+    FChunk: string;
+    FIsComplete: Boolean;
+  public
+    constructor Create(const AOperationId: string; const AChunk: string; AIsComplete: Boolean);
+    property Chunk: string read FChunk;
+    property IsComplete: Boolean read FIsComplete;
+  end;
+
   // Base class for background operations
   TAsyncOperation = class
   private
@@ -136,24 +150,40 @@ type
   private
     FDiffContent: string;
     FCustomPrompt: string;
+    FCommitMessage: string;
+    FStreamingFinished: Boolean;
+    FStreamingError: string;
+    procedure StreamCallback(const AChunk: string; AFinished: Boolean);
   protected
     function ExecuteOperation: bobaui.TMsg; override;
   public
     constructor Create(const AOperationId: string; const ADiffContent: string; const ACustomPrompt: string);
   end;
 
+// Command class for generating commit message asynchronously
+type
+  TGenerateCommitMessageCommand = class(bobaui.TCommand)
+  private
+    FDiffContent: string;
+    FCustomPrompt: string;
+  public
+    constructor Create(const ADiffContent: string; const ACustomPrompt: string);
+    function Execute: bobaui.TMsg; override;
+  end;
+
+// Public functions
+procedure RunCommitCommand(const CustomPrompt: string = ''; const StageChanges: Boolean = False);
+
+
+implementation
+
 // Global variable for thread communication - reference to the BobaUI program
 var
   GProgram: TBobaUIProgram = nil;
 
 // Forward declarations
-{$IFDEF GITPAL_DEBUG}
-procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log'); forward;
-{$ENDIF}
-function ExecuteGitCommit(const CommitMessage: string; out ErrorMessage: string): Boolean; forward;
-function ExecuteGitAdd(out ErrorMessage: string): Boolean; forward;
-function HasUnstagedChanges: Boolean; forward;
 function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''): string; forward;
+procedure GenerateCommitMessageStream(const DiffContent: string; const CustomPrompt: string; ACallback: models.TLLMStreamCallback); forward;
 function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string): bobaui.TCmd; forward;
 
 constructor TCommitGeneratedMsg.Create(const ACommitMessage: string);
@@ -192,6 +222,14 @@ begin
   inherited Create(AOperationId, ASuccess, AErrorMessage);
 end;
 
+// TAsyncStreamingChunkMsg implementations
+constructor TAsyncStreamingChunkMsg.Create(const AOperationId: string; const AChunk: string; AIsComplete: Boolean);
+begin
+  inherited Create(AOperationId, True, ''); // Streaming chunks are always "successful"
+  FChunk := AChunk;
+  FIsComplete := AIsComplete;
+end;
+
 // TAsyncOperation implementations
 constructor TAsyncOperation.Create(const AOperationId: string);
 begin
@@ -204,29 +242,24 @@ end;
 
 destructor TAsyncOperation.Destroy;
 begin
-  Cancel;
-  FCS.Free;
-  inherited Destroy;
+  try
+    Cancel;
+    FCS.Free;
+    inherited Destroy;
+  except
+    // Silently ignore cleanup exceptions
+  end;
 end;
 
 procedure TAsyncOperation.Start;
 begin
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('TAsyncOperation.Start: Starting operation ' + FOperationId);
-  {$ENDIF}
   FCS.Enter;
   try
     if not FIsRunning then
     begin
       FIsRunning := True;
       FThread := TAsyncOperationThread.Create(Self, FOperationId);
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TAsyncOperation.Start: Created thread for operation ' + FOperationId);
-      {$ENDIF}
       FThread.Start;
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TAsyncOperation.Start: Started thread for operation ' + FOperationId);
-      {$ENDIF}
     end;
   finally
     FCS.Leave;
@@ -241,6 +274,7 @@ begin
     begin
       FThread.Terminate;
       FThread.WaitFor;
+      Sleep(10); // Small delay to ensure thread cleanup is complete
       FThread.Free;
       FThread := nil;
       FIsRunning := False;
@@ -268,46 +302,66 @@ begin
   inherited Create(AOperationId);
   FDiffContent := ADiffContent;
   FCustomPrompt := ACustomPrompt;
+  FCommitMessage := AnsiString('');
+  FStreamingFinished := False;
+  FStreamingError := AnsiString('');
+end;
+
+procedure TAsyncCommitGeneration.StreamCallback(const AChunk: string; AFinished: Boolean);
+var
+  StreamMsg: TAsyncStreamingChunkMsg;
+begin
+  if AFinished then
+  begin
+    FStreamingFinished := True;
+    if Pos('Error:', FCommitMessage) = 1 then
+      FStreamingError := FCommitMessage;
+  end
+  else
+  begin
+    FCommitMessage := FCommitMessage + AChunk;
+  end;
+  
+  // Send real-time streaming chunk to UI
+  if Assigned(GProgram) then
+  begin
+    StreamMsg := TAsyncStreamingChunkMsg.Create(FOperationId, AChunk, AFinished);
+    try
+      GProgram.Send(StreamMsg);
+    except
+      on E: Exception do
+      begin
+        StreamMsg.Free;
+      end;
+    end;
+  end;
 end;
 
 function TAsyncCommitGeneration.ExecuteOperation: bobaui.TMsg;
-var
-  CommitMessage: string;
 begin
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('TAsyncCommitGeneration.ExecuteOperation: Starting commit generation for operation ' + FOperationId);
-  {$ENDIF}
   try
-    CommitMessage := GenerateCommitMessage(FDiffContent, FCustomPrompt);
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('TAsyncCommitGeneration.ExecuteOperation: Got commit message: ' + Copy(CommitMessage, 1, 100) + '...');
-    {$ENDIF}
-    if Pos('Error:', CommitMessage) = 1 then
+    GenerateCommitMessageStream(FDiffContent, FCustomPrompt, @StreamCallback);
+    
+    // Wait for streaming to complete
+    while not FStreamingFinished do
     begin
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TAsyncCommitGeneration.ExecuteOperation: Error in commit message: ' + CommitMessage);
-      {$ENDIF}
-      Result := TAsyncCommitGeneratedMsg.CreateError(FOperationId, CommitMessage);
+      Sleep(10); // Small delay to avoid busy waiting
+    end;
+    
+    if FStreamingError <> '' then
+    begin
+      Result := TAsyncCommitGeneratedMsg.CreateError(FOperationId, FStreamingError);
     end
     else
     begin
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TAsyncCommitGeneration.ExecuteOperation: Success, creating result message');
-      {$ENDIF}
-      Result := TAsyncCommitGeneratedMsg.Create(FOperationId, CommitMessage);
+      Result := TAsyncCommitGeneratedMsg.Create(FOperationId, FCommitMessage);
     end;
   except
     on E: Exception do
     begin
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TAsyncCommitGeneration.ExecuteOperation: Exception: ' + E.Message);
-      {$ENDIF}
       Result := TAsyncCommitGeneratedMsg.CreateError(FOperationId, 'Exception: ' + E.Message);
     end;
   end;
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('TAsyncCommitGeneration.ExecuteOperation: Completed operation ' + FOperationId);
-  {$ENDIF}
 end;
 
 // TAsyncOperationThread implementations
@@ -321,22 +375,23 @@ end;
 
 procedure TAsyncOperationThread.PostResultToMainThread(AResultMsg: bobaui.TMsg);
 begin
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('TAsyncOperationThread.PostResultToMainThread: Posting result for operation ' + FOperationId);
-  {$ENDIF}
-  // Use BobaUI's new Send() method for thread-safe message sending
-  if Assigned(GProgram) and Assigned(AResultMsg) then
-  begin
-    GProgram.Send(AResultMsg);
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('TAsyncOperationThread.PostResultToMainThread: Successfully sent message via Program.Send()');
-    {$ENDIF}
-  end
-  else
-  begin
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('TAsyncOperationThread.PostResultToMainThread: ERROR - GProgram or AResultMsg is nil');
-    {$ENDIF}
+  try
+    // Use BobaUI's new Send() method for thread-safe message sending
+    if Assigned(GProgram) and Assigned(AResultMsg) then
+    begin
+      GProgram.Send(AResultMsg);
+    end
+    else
+    begin
+      if Assigned(AResultMsg) then
+        AResultMsg.Free;
+    end;
+  except
+    on E: Exception do
+    begin
+      if Assigned(AResultMsg) then
+        AResultMsg.Free;
+    end;
   end;
 end;
 
@@ -344,58 +399,34 @@ procedure TAsyncOperationThread.Execute;
 var
   ResultMsg: bobaui.TMsg;
 begin
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('TAsyncOperationThread.Execute: Starting thread execution for operation ' + FOperationId);
-  {$ENDIF}
   try
     if not Terminated then
     begin
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TAsyncOperationThread.Execute: Calling ExecuteOperation for ' + FOperationId);
-      {$ENDIF}
       // Execute the actual operation
       ResultMsg := FOperation.ExecuteOperation;
       
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TAsyncOperationThread.Execute: ExecuteOperation completed for ' + FOperationId);
-      {$ENDIF}
       
       // Post result back to main thread
       if not Terminated and Assigned(ResultMsg) then
       begin
-        {$IFDEF GITPAL_DEBUG}
-        LogToFile('TAsyncOperationThread.Execute: Posting result to main thread for ' + FOperationId);
-        {$ENDIF}
         PostResultToMainThread(ResultMsg);
       end
       else
       begin
-        {$IFDEF GITPAL_DEBUG}
-        LogToFile('TAsyncOperationThread.Execute: Cannot post result - Terminated=' + BoolToStr(Terminated) + ', ResultMsg assigned=' + BoolToStr(Assigned(ResultMsg)));
-        {$ENDIF}
       end;
     end
     else
     begin
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TAsyncOperationThread.Execute: Thread was terminated before execution for ' + FOperationId);
-      {$ENDIF}
     end;
   except
     on E: Exception do
     begin
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TAsyncOperationThread.Execute: Exception in thread: ' + E.Message);
-      {$ENDIF}
       // Create error message
       ResultMsg := TAsyncCommitGeneratedMsg.CreateError(FOperationId, 'Thread exception: ' + E.Message);
       PostResultToMainThread(ResultMsg);
     end;
   end;
   
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('TAsyncOperationThread.Execute: Marking operation as no longer running for ' + FOperationId);
-  {$ENDIF}
   
   // Mark operation as no longer running
   FOperation.FCS.Enter;
@@ -405,9 +436,6 @@ begin
     FOperation.FCS.Leave;
   end;
   
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('TAsyncOperationThread.Execute: Thread execution completed for ' + FOperationId);
-  {$ENDIF}
 end;
 
 constructor TCommitModel.Create;
@@ -428,6 +456,9 @@ begin
   FCurrentOperation := nil;
   FOperationId := AnsiString('');
   FCursorHidden := False;
+  // Initialize streaming fields
+  FStreamingText := AnsiString('');
+  FIsStreaming := False;
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -458,6 +489,9 @@ begin
   FCurrentOperation := nil;
   FOperationId := AnsiString('');
   FCursorHidden := False;
+  // Initialize streaming fields
+  FStreamingText := AnsiString('');
+  FIsStreaming := False;
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -488,6 +522,9 @@ begin
   FCurrentOperation := nil;
   FOperationId := AnsiString('');
   FCursorHidden := False;
+  // Initialize streaming fields
+  FStreamingText := AnsiString('');
+  FIsStreaming := False;
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -503,15 +540,28 @@ end;
 
 destructor TCommitModel.Destroy;
 begin
-  // Cancel any running async operation
-  if Assigned(FCurrentOperation) then
-  begin
-    FCurrentOperation.Cancel;
-    FCurrentOperation.Free;
+  try
+    // Cancel any running async operation
+    if Assigned(FCurrentOperation) then
+    begin
+      FCurrentOperation.Cancel;
+      FCurrentOperation.Free;
+      FCurrentOperation := nil;
+    end;
+    if Assigned(FList) then
+    begin
+      FList.Free;
+      FList := nil;
+    end;
+    if Assigned(FSpinner) then
+    begin
+      FSpinner.Free;
+      FSpinner := nil;
+    end;
+    inherited Destroy;
+  except
+    // Silently ignore cleanup exceptions
   end;
-  FList.Free;
-  FSpinner.Free;
-  inherited Destroy;
 end;
 
 
@@ -529,10 +579,30 @@ begin
     Exit;
   end;
   
-  // If we're still generating the commit message, show spinner
+  // If we're still generating the commit message, show spinner or streaming text
   if FGenerating then
   begin
-    Result := FSpinner.View + AnsiString(' Analyzing staged changes and generating commit message...');
+    if FIsStreaming and (FStreamingText <> '') then
+    begin
+      // Show streaming text in real-time
+      PaddedContent := AnsiString(' ') + FStreamingText + AnsiString(' ');
+      Style := bobastyle.TStyle.Create;
+      try
+        Style.BorderStyle := bobastyle.bsSingle;
+        Style.BorderColor := bobastyle.cBrightYellow; // Different color to indicate streaming
+        Style.Width := FTerminalWidth;
+        Style.Content := PaddedContent;
+        BorderedMessage := Style.Render;
+      finally
+        Style.Free;
+      end;
+      Result := AnsiString('Generating commit message (streaming)...') + #10 + #10 + BorderedMessage;
+    end
+    else
+    begin
+      // Show spinner while waiting for first chunk
+      Result := FSpinner.View + AnsiString(' Analyzing staged changes and generating commit message...');
+    end;
     Exit;
   end;
   
@@ -580,31 +650,19 @@ end;
 
 procedure TCommitModel.StartCommitGeneration;
 begin
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('TCommitModel.StartCommitGeneration: Current state = ' + IntToStr(Ord(FAsyncState)));
-  {$ENDIF}
   if FAsyncState = osIdle then
   begin
     FOperationId := GenerateOperationId;
     FAsyncState := osGenerating;
     
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('TCommitModel.StartCommitGeneration: Starting operation ' + FOperationId + ' with diff length ' + IntToStr(Length(FDiffContent)));
-    {$ENDIF}
     
     // Create and start the async operation
     FCurrentOperation := TAsyncCommitGeneration.Create(FOperationId, FDiffContent, FCustomPrompt);
     FCurrentOperation.Start;
     
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('TCommitModel.StartCommitGeneration: Operation started successfully');
-    {$ENDIF}
   end
   else
   begin
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('TCommitModel.StartCommitGeneration: Cannot start - already in state ' + IntToStr(Ord(FAsyncState)));
-    {$ENDIF}
   end;
 end;
 
@@ -619,116 +677,18 @@ begin
   FAsyncState := osIdle;
 end;
 
-function ExecuteGitCommit(const CommitMessage: string; out ErrorMessage: string): Boolean;
-var
-  GitProcess: TProcess;
-  OutputStr: string;
-  BytesRead: longint;
-  Buffer: array[0..2047] of char;
-begin
-  Result := False;
-  ErrorMessage := AnsiString('');
-  GitProcess := TProcess.Create(nil);
-  try
-    GitProcess.Executable := AnsiString('git');
-    GitProcess.Parameters.Add(AnsiString('commit'));
-    GitProcess.Parameters.Add(AnsiString('-m'));
-    GitProcess.Parameters.Add(CommitMessage);
-    GitProcess.Options := [poUsePipes, poStderrToOutPut];
-    GitProcess.Execute;
-    
-    OutputStr := AnsiString('');
-    while GitProcess.Running do
-    begin
-      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
-      if BytesRead > 0 then
-        OutputStr := OutputStr + Copy(Buffer, 1, BytesRead);
-    end;
-    
-    // Read any remaining output
-    repeat
-      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
-      if BytesRead > 0 then
-        OutputStr := OutputStr + Copy(Buffer, 1, BytesRead);
-    until BytesRead <= 0;
-    
-    GitProcess.WaitOnExit;
-    
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('Git commit exit code: ' + IntToStr(GitProcess.ExitStatus));
-    LogToFile('Git commit output: ' + OutputStr);
-    {$ENDIF}
-    
-    Result := GitProcess.ExitStatus = 0;
-    
-    if not Result then
-      ErrorMessage := OutputStr;
-      
-  finally
-    GitProcess.Free;
-  end;
-end;
-
-function ExecuteGitAdd(out ErrorMessage: string): Boolean;
-var
-  GitProcess: TProcess;
-  OutputStr: string;
-  BytesRead: longint;
-  Buffer: array[0..2047] of char;
-begin
-  Result := False;
-  ErrorMessage := AnsiString('');
-  GitProcess := TProcess.Create(nil);
-  try
-    GitProcess.Executable := AnsiString('git');
-    GitProcess.Parameters.Add(AnsiString('add'));
-    GitProcess.Parameters.Add(AnsiString('.'));
-    GitProcess.Options := [poUsePipes, poStderrToOutPut];
-    GitProcess.Execute;
-    
-    OutputStr := AnsiString('');
-    while GitProcess.Running do
-    begin
-      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
-      if BytesRead > 0 then
-        OutputStr := OutputStr + Copy(Buffer, 1, BytesRead);
-    end;
-    
-    // Read any remaining output
-    repeat
-      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
-      if BytesRead > 0 then
-        OutputStr := OutputStr + Copy(Buffer, 1, BytesRead);
-    until BytesRead <= 0;
-    
-    GitProcess.WaitOnExit;
-    
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('Git add exit code: ' + IntToStr(GitProcess.ExitStatus));
-    LogToFile('Git add output: ' + OutputStr);
-    {$ENDIF}
-    
-    Result := GitProcess.ExitStatus = 0;
-    
-    if not Result then
-      ErrorMessage := OutputStr;
-      
-  finally
-    GitProcess.Free;
-  end;
-end;
-
 function TCommitModel.Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult;
 var
   KeyMsg: bobaui.TKeyMsg;
   WindowMsg: bobaui.TWindowSizeMsg;
   ListSelectionMsg: bobacomponents.TListSelectionMsg;
-  ComponentTickMsg: bobaui.TComponentTickMsg;
   CommitGeneratedMsg: TCommitGeneratedMsg;
   AsyncCommitMsg: TAsyncCommitGeneratedMsg;
+  StreamChunkMsg: TAsyncStreamingChunkMsg;
   NewModel: TCommitModel;
   NewList: bobacomponents.TList;
   NewSpinner: bobacomponents.TSpinner;
+  GitResult: git.TGitResult;
 begin
   Result.Model := Self;
   Result.Cmd := nil;
@@ -737,22 +697,13 @@ begin
   if Msg is TAsyncCommitGeneratedMsg then
   begin
     AsyncCommitMsg := TAsyncCommitGeneratedMsg(Msg);
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('TCommitModel.Update: Got async commit message for operation ' + AsyncCommitMsg.OperationId + ', current operation = ' + FOperationId);
-    {$ENDIF}
     if AsyncCommitMsg.OperationId = FOperationId then
     begin
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TCommitModel.Update: Operation IDs match, processing result. Success = ' + BoolToStr(AsyncCommitMsg.Success));
-      {$ENDIF}
       // This is our operation result
       CancelCurrentOperation; // Clean up
       
       if AsyncCommitMsg.Success then
       begin
-        {$IFDEF GITPAL_DEBUG}
-        LogToFile('TCommitModel.Update: Success! Creating new model with commit message: ' + Copy(AsyncCommitMsg.CommitMessage, 1, 100) + '...');
-        {$ENDIF}
         // Success - create new model with commit message
         NewModel := TCommitModel.Create(AsyncCommitMsg.CommitMessage);
         NewModel.FTerminalWidth := FTerminalWidth;
@@ -761,9 +712,6 @@ begin
       end
       else
       begin
-        {$IFDEF GITPAL_DEBUG}
-        LogToFile('TCommitModel.Update: Error in async operation: ' + AsyncCommitMsg.ErrorMessage);
-        {$ENDIF}
         // Error - show error and quit
         writeln('Error generating commit message: ' + AsyncCommitMsg.ErrorMessage);
         Result.Cmd := bobaui.QuitCmd;
@@ -771,9 +719,28 @@ begin
     end
     else
     begin
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TCommitModel.Update: Operation ID mismatch, ignoring message');
-      {$ENDIF}
+    end;
+    Exit; // Don't process other messages this cycle
+  end;
+
+  // Handle streaming chunk messages for real-time updates
+  if Msg is TAsyncStreamingChunkMsg then
+  begin
+    StreamChunkMsg := TAsyncStreamingChunkMsg(Msg);
+    if StreamChunkMsg.OperationId = FOperationId then
+    begin      
+      if not StreamChunkMsg.IsComplete then
+      begin
+        // Add chunk to streaming text
+        FStreamingText := FStreamingText + StreamChunkMsg.Chunk;
+        FIsStreaming := True;
+      end
+      else
+      begin
+        // Streaming is complete, but keep showing the streaming text
+        // The final TAsyncCommitGeneratedMsg will handle the transition to the final state
+        FIsStreaming := False;
+      end;
     end;
     Exit; // Don't process other messages this cycle
   end;
@@ -829,7 +796,12 @@ begin
     if ListSelectionMsg.SelectedIndex = 0 then
     begin
       // Accept: Execute git commit and update state
-      FCommitSuccessful := ExecuteGitCommit(FCommitMessage, FCommitErrorMessage);
+      GitResult := git.TGitRepository.Commit(FCommitMessage);
+      FCommitSuccessful := GitResult.Success;
+      if not GitResult.Success then
+        FCommitErrorMessage := GitResult.ErrorMessage
+      else
+        FCommitErrorMessage := AnsiString('');
       FCommitExecuted := True;
       // Don't quit immediately, let the view show the result first
     end
@@ -843,21 +815,12 @@ begin
   begin
     if FGenerating then  // Show spinner while generating
     begin
-      // Update spinner during async operation
+      // Update spinner in place during async operation instead of creating new model
       NewSpinner := FSpinner.Update(Msg);
       if NewSpinner <> FSpinner then
       begin
-        NewModel := TCommitModel.Create(FDiffContent, FCustomPrompt);
-        NewModel.FTerminalWidth := FTerminalWidth;
-        NewModel.FTerminalHeight := FTerminalHeight;
-        NewModel.FAsyncState := FAsyncState;
-        NewModel.FCurrentOperation := FCurrentOperation;
-        NewModel.FOperationId := FOperationId;
-        // Transfer ownership of operation to new model
-        FCurrentOperation := nil;
-        NewModel.FSpinner.Free;
-        NewModel.FSpinner := NewSpinner;
-        Result.Model := NewModel;
+        FSpinner.Free;
+        FSpinner := NewSpinner;
         Result.Cmd := FSpinner.Tick; // Continue animation
       end;
     end;
@@ -874,13 +837,9 @@ begin
   else if Msg is bobaui.TWindowSizeMsg then
   begin
     WindowMsg := bobaui.TWindowSizeMsg(Msg);
-    // Always update dimensions without recreating model
+    // Update dimensions in place without recreating model
     FTerminalWidth := WindowMsg.Width;
     FTerminalHeight := WindowMsg.Height;
-    
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('TCommitModel.Update: Window size message - width=' + IntToStr(FTerminalWidth) + ', height=' + IntToStr(FTerminalHeight) + ', AsyncState=' + IntToStr(Ord(FAsyncState)) + ', CurrentOperation assigned=' + BoolToStr(Assigned(FCurrentOperation)));
-    {$ENDIF}
     
     // Hide cursor on first window size message (initialization)
     if not FCursorHidden then
@@ -890,9 +849,6 @@ begin
       // If we're waiting to generate and just got window size, start the generation
       if (FAsyncState = osIdle) and (FGenerating) and (not Assigned(FCurrentOperation)) then
       begin
-        {$IFDEF GITPAL_DEBUG}
-        LogToFile('TCommitModel.Update: Starting async commit generation from window size message');
-        {$ENDIF}
         // Start spinner animation and async commit generation
         StartCommitGeneration;
         // Execute multiple commands: hide cursor and start ticker
@@ -907,169 +863,14 @@ begin
   end;
 end;
 
-procedure ShowHelp;
-begin
-  writeln('gitpal - AI-powered git assistant');
-  writeln('');
-  writeln('Usage:');
-  writeln('  gitpal [command]');
-  writeln('');
-  writeln('Available Commands:');
-  writeln('  commit       Generate and apply AI-powered commit messages');
-  writeln('  changelog    Update CHANGELOG.md with recent changes');
-  writeln('');
-  writeln('Options:');
-  writeln('  --help, -h     Show this help message');
-  writeln('  --version, -v  Show version information');
-  writeln('');
-  writeln('Use "gitpal [command] --help" for more information about a command.');
-end;
 
-procedure ShowCommitHelp;
-begin
-  writeln('gitpal commit - Generate AI-powered commit messages');
-  writeln('');
-  writeln('Usage:');
-  writeln('  gitpal commit [options]');
-  writeln('');
-  writeln('Description:');
-  writeln('  Analyzes your git changes and generates a descriptive commit message');
-  writeln('  using AI. You can review and accept or decline the suggestion.');
-  writeln('');
-  writeln('Options:');
-  writeln('  --stage          Stage all changes before generating commit message');
-  writeln('  --prompt <text>  Add custom instructions to the AI prompt');
-  writeln('  --help, -h       Show this help message');
-  writeln('');
-  writeln('Examples:');
-  writeln('  gitpal commit');
-  writeln('  gitpal commit --stage');
-  writeln('  gitpal commit --stage --prompt "Focus on performance improvements"');
-  writeln('  gitpal commit --prompt "Don''t mention specific technology names"');
-end;
 
-procedure ShowChangelogHelp;
-begin
-  writeln('gitpal changelog - Update CHANGELOG.md file');
-  writeln('');
-  writeln('Usage:');
-  writeln('  gitpal changelog [options]');
-  writeln('');
-  writeln('Description:');
-  writeln('  Analyzes recent commits and updates your CHANGELOG.md file with');
-  writeln('  a summary of changes organized by type (features, fixes, etc.).');
-  writeln('');
-  writeln('Options:');
-  writeln('  --help, -h   Show this help message');
-end;
 
-{$IFDEF GITPAL_DEBUG}
-procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log');
-var
-  LogFile: TextFile;
-  Timestamp: string;
-begin
-  try
-    AssignFile(LogFile, FileName);
-    if FileExists(FileName) then
-      Append(LogFile)
-    else
-      Rewrite(LogFile);
-    
-    Timestamp := FormatDateTime('yyyy-mm-dd hh:nn:ss', Now);
-    WriteLn(LogFile, '[' + Timestamp + '] ' + LogMessage);
-    CloseFile(LogFile);
-  except
-    // Silently ignore logging errors to avoid breaking the main functionality
-  end;
-end;
-{$ENDIF}
 
-function GetGitDiff: string;
-var
-  GitProcess: TProcess;
-  OutputStr: string;
-  BytesRead: longint;
-  Buffer: array[0..2047] of char;
-begin
-  Result := AnsiString('');
-  GitProcess := TProcess.Create(nil);
-  try
-    GitProcess.Executable := AnsiString('git');
-    GitProcess.Parameters.Add(AnsiString('diff'));
-    GitProcess.Parameters.Add(AnsiString('--cached'));
-    GitProcess.Options := [poUsePipes, poStderrToOutPut];
-    GitProcess.Execute;
-    
-    OutputStr := AnsiString('');
-    while GitProcess.Running do
-    begin
-      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
-      if BytesRead > 0 then
-        OutputStr := OutputStr + Copy(AnsiString(Buffer), 1, BytesRead);
-    end;
-    
-    // Read any remaining output
-    repeat
-      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
-      if BytesRead > 0 then
-        OutputStr := OutputStr + Copy(AnsiString(Buffer), 1, BytesRead);
-    until BytesRead <= 0;
-    
-    GitProcess.WaitOnExit;
-    Result := OutputStr;
-  finally
-    GitProcess.Free;
-  end;
-end;
-
-function HasUnstagedChanges: Boolean;
-var
-  GitProcess: TProcess;
-  OutputStr: string;
-  BytesRead: longint;
-  Buffer: array[0..2047] of char;
-begin
-  Result := False;
-  GitProcess := TProcess.Create(nil);
-  try
-    GitProcess.Executable := AnsiString('git');
-    GitProcess.Parameters.Add(AnsiString('diff'));
-    GitProcess.Parameters.Add(AnsiString('--name-only'));
-    GitProcess.Options := [poUsePipes, poStderrToOutPut];
-    GitProcess.Execute;
-    
-    OutputStr := AnsiString('');
-    while GitProcess.Running do
-    begin
-      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
-      if BytesRead > 0 then
-        OutputStr := OutputStr + Copy(AnsiString(Buffer), 1, BytesRead);
-    end;
-    
-    // Read any remaining output
-    repeat
-      BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
-      if BytesRead > 0 then
-        OutputStr := OutputStr + Copy(AnsiString(Buffer), 1, BytesRead);
-    until BytesRead <= 0;
-    
-    GitProcess.WaitOnExit;
-    
-    // If there's any output, there are unstaged changes
-    Result := (GitProcess.ExitStatus = 0) and (Trim(OutputStr) <> '');
-    
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('HasUnstagedChanges: ' + BoolToStr(Result) + ', output: ' + OutputStr);
-    {$ENDIF}
-  finally
-    GitProcess.Free;
-  end;
-end;
 
 function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''): string;
 var
-  GeminiProvider: models.TGeminiProvider;
+  GeminiProvider: gemini_provider.TGeminiProvider;
   Messages: array of models.TLLMMessage;
   Response: models.TLLMChatCompletionResponse;
   ApiKey: string;
@@ -1079,7 +880,7 @@ begin
   Result := AnsiString('');
   
   // Get API key from environment
-  ApiKey := models.TGeminiProvider.GetApiKeyFromEnvironment;
+  ApiKey := gemini_provider.TGeminiProvider.GetApiKeyFromEnvironment;
   if ApiKey = '' then
   begin
     Result := AnsiString('Error: GEMINI_API_KEY environment variable not set');
@@ -1087,7 +888,7 @@ begin
   end;
   
   // Create provider instance
-  GeminiProvider := models.TGeminiProvider.Create(ApiKey);
+  GeminiProvider := gemini_provider.TGeminiProvider.Create(ApiKey);
   try
     // Set up messages
     SetLength(Messages, 2);
@@ -1117,39 +918,29 @@ begin
     Messages[1].Role := models.lmrUser;
     Messages[1].Content := UserPrompt;
     
-    // Log the request for debugging
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('=== AI REQUEST ===');
-    LogToFile('System Prompt: ' + SystemPrompt);
-    LogToFile('User Prompt: ' + UserPrompt);
-    LogToFile('==================');
-    {$ENDIF}
-    
-    // Call ChatCompletion
-    Response := GeminiProvider.ChatCompletion(
-      GeminiProvider.GetDefaultModel,
-      Messages,
-      0.3,    // Lower temperature for more consistent results
-      400     // Max tokens for detailed commit message with description
-    );
-    
-    // Extract the response
-    if Length(Response.Choices) > 0 then
-    begin
-      Result := Response.Choices[0].Message.Content;
-      // Log the response for debugging
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('=== AI RESPONSE ===');
-      LogToFile('Raw Response: ' + Result);
-      LogToFile('===================');
-      {$ENDIF}
-    end
-    else
-    begin
-      Result := AnsiString('Error: No response from LLM');
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('ERROR: No response from LLM');
-      {$ENDIF}
+    try
+      // Call ChatCompletion
+      Response := GeminiProvider.ChatCompletion(
+        GeminiProvider.GetDefaultModel,
+        Messages,
+        0.3,    // Lower temperature for more consistent results
+        400     // Max tokens for detailed commit message with description
+      );
+      
+      // Extract the response
+      if Length(Response.Choices) > 0 then
+      begin
+        Result := Response.Choices[0].Message.Content;
+      end
+      else
+      begin
+        Result := AnsiString('Error: No response from LLM');
+      end;
+    except
+      on E: Exception do
+      begin
+        Result := AnsiString('Error: ' + E.Message);
+      end;
     end;
       
   finally
@@ -1157,16 +948,73 @@ begin
   end;
 end;
 
-// Command class for generating commit message asynchronously
-type
-  TGenerateCommitMessageCommand = class(bobaui.TCommand)
-  private
-    FDiffContent: string;
-    FCustomPrompt: string;
-  public
-    constructor Create(const ADiffContent: string; const ACustomPrompt: string);
-    function Execute: bobaui.TMsg; override;
+procedure GenerateCommitMessageStream(const DiffContent: string; const CustomPrompt: string; ACallback: models.TLLMStreamCallback);
+var
+  GeminiProvider: gemini_provider.TGeminiProvider;
+  Messages: array of models.TLLMMessage;
+  ApiKey: string;
+  SystemPrompt: string;
+  UserPrompt: string;
+begin
+  // Get API key from environment
+  ApiKey := gemini_provider.TGeminiProvider.GetApiKeyFromEnvironment;
+  if ApiKey = '' then
+  begin
+    ACallback('Error: GEMINI_API_KEY environment variable not set', True);
+    Exit;
   end;
+  
+  // Create provider instance
+  GeminiProvider := gemini_provider.TGeminiProvider.Create(ApiKey);
+  try
+    // Set up messages
+    SetLength(Messages, 2);
+    
+    SystemPrompt := AnsiString('You are an expert Git user and software developer. ') +
+                   AnsiString('Your task is to analyze git diffs and create detailed, well-structured commit messages. ') +
+                   AnsiString('Follow these conventions:') + #10 +
+                   AnsiString('- First line: Short title under 50 characters using imperative mood') + #10 +
+                   AnsiString('- Second line: Leave blank') + #10 +
+                   AnsiString('- Following lines: Detailed description explaining WHAT changed and WHY') + #10 +
+                   AnsiString('- Use conventional commit prefixes when appropriate (feat:, fix:, docs:, refactor:, etc.)') + #10 +
+                   AnsiString('- Include 1-2 paragraphs describing the changes in detail') + #10 +
+                   AnsiString('- Add blank lines between paragraphs for better readability') + #10 +
+                   AnsiString('- Explain the motivation and context behind the changes') + #10 +
+                   AnsiString('- Mention any important implementation details or considerations') + #10 +
+                   AnsiString('- Use imperative mood throughout (e.g., "Add feature" not "Added feature")') + #10 +
+                   AnsiString('Return ONLY the commit message, no explanations or additional formatting.');
+    
+    // Add custom prompt if provided
+    if CustomPrompt <> '' then
+      SystemPrompt := SystemPrompt + #10 + #10 + AnsiString('Additional instructions: ') + CustomPrompt;
+    
+    UserPrompt := AnsiString('Please analyze this git diff and generate an appropriate commit message:') + #10 + #10 + DiffContent;
+    
+    Messages[0].Role := models.lmrSystem;
+    Messages[0].Content := SystemPrompt;
+    Messages[1].Role := models.lmrUser;
+    Messages[1].Content := UserPrompt;
+    
+    try
+      // Call ChatCompletionStream
+      GeminiProvider.ChatCompletionStream(
+        GeminiProvider.GetDefaultModel,
+        Messages,
+        ACallback,
+        0.3,    // Lower temperature for more consistent results
+        400     // Max tokens for detailed commit message with description
+      );
+    except
+      on E: Exception do
+      begin
+        ACallback('Error: ' + E.Message, True);
+      end;
+    end;
+      
+  finally
+    GeminiProvider.Free;
+  end;
+end;
 
 constructor TGenerateCommitMessageCommand.Create(const ADiffContent: string; const ACustomPrompt: string);
 begin
@@ -1195,16 +1043,17 @@ var
   Model: TCommitModel;
   DiffContent: string;
   ErrorMessage: string;
+  UnstagedResult: git.TGitResult;
+  AddResult: git.TGitResult;
+  DiffResult: git.TGitResult;
 begin
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('RunCommitCommand: Starting commit command with custom prompt: ' + CustomPrompt + ', stage changes: ' + BoolToStr(StageChanges));
-  {$ENDIF}
   
   // Handle staging if requested
   if StageChanges then
   begin
     // Check if there are unstaged changes first
-    if not HasUnstagedChanges then
+    UnstagedResult := git.TGitRepository.GetDiff(['--name-only']);
+    if not UnstagedResult.Success or (Trim(UnstagedResult.Output) = '') then
     begin
       writeln('No unstaged changes found to stage.');
       // Continue to check for already staged changes
@@ -1212,9 +1061,10 @@ begin
     else
     begin
       writeln('Staging changes...');
-      if not ExecuteGitAdd(ErrorMessage) then
+      AddResult := git.TGitRepository.Add(['.']);
+      if not AddResult.Success then
       begin
-        writeln('Error staging changes: ', ErrorMessage);
+        writeln('Error staging changes: ', AddResult.ErrorMessage);
         Exit;
       end;
       writeln('Changes staged successfully.');
@@ -1222,7 +1072,13 @@ begin
   end;
   
   // Check if there are staged changes
-  DiffContent := GetGitDiff;
+  DiffResult := git.TGitRepository.GetDiff(['--cached']);
+  if not DiffResult.Success then
+  begin
+    writeln('Error getting git diff: ', DiffResult.ErrorMessage);
+    Exit;
+  end;
+  DiffContent := DiffResult.Output;
   if DiffContent = '' then
   begin
     if StageChanges then
@@ -1232,17 +1088,8 @@ begin
     Exit;
   end;
   
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('RunCommitCommand: Got git diff with length: ' + IntToStr(Length(DiffContent)));
-  {$ENDIF}
-  
-  // Note: No need to initialize async message queue - using BobaUI's built-in Send() method
-  
   // Create model that will show spinner and generate message async
   Model := TCommitModel.Create(DiffContent, CustomPrompt);
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('RunCommitCommand: Created TCommitModel with async state');
-  {$ENDIF}
   
   Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);
   
@@ -1250,108 +1097,42 @@ begin
   GProgram := Prog;
   
   try
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('RunCommitCommand: Starting bobaui program');
-    {$ENDIF}
     Prog.Run;
-    {$IFDEF GITPAL_DEBUG}
-    LogToFile('RunCommitCommand: Bobaui program finished');
-    {$ENDIF}
-  finally
-    GProgram := nil;
-    Prog.Free;
-  end;
-  {$IFDEF GITPAL_DEBUG}
-  LogToFile('RunCommitCommand: Command completed');
-  {$ENDIF}
-end;
-
-procedure RunChangelogCommand;
-begin
-  writeln('Changelog functionality coming soon...');
-end;
-
-var
-  Command: string;
-  CustomPrompt: string;
-  StageChanges: Boolean;
-  i: integer;
-  ShowMainHelp: boolean;
-begin
-  ShowMainHelp := false;
-  Command := AnsiString('');
-  CustomPrompt := AnsiString('');
-  StageChanges := False;
-  
-  // Parse command line arguments
-  if ParamCount = 0 then
-    ShowMainHelp := true
-  else
-  begin
-    i := 1;
-    while i <= ParamCount do
+  except
+    on E: Exception do
     begin
-      if (ParamStr(i) = '--help') or (ParamStr(i) = '-h') then
-      begin
-        if Command = AnsiString('') then
-          ShowMainHelp := true
-        else if Command = AnsiString('commit') then
-        begin
-          ShowCommitHelp;
-          Exit;
-        end
-        else if Command = AnsiString('changelog') then
-        begin
-          ShowChangelogHelp;
-          Exit;
-        end;
-      end
-      else if (ParamStr(i) = '--version') or (ParamStr(i) = '-v') then
-      begin
-        writeln(AppVersion);
-        Exit;
-      end
-      else if ParamStr(i) = '--prompt' then
-      begin
-        // Get the next parameter as the prompt value
-        if i < ParamCount then
-        begin
-          Inc(i);
-          CustomPrompt := AnsiString(ParamStr(i));
-        end
-        else
-        begin
-          writeln('Error: --prompt flag requires a value');
-          Halt(1);
-        end;
-      end
-      else if ParamStr(i) = '--stage' then
-      begin
-        StageChanges := True;
-      end
-      else if (Command = AnsiString('')) and (ParamStr(i)[1] <> '-') then
-        Command := AnsiString(ParamStr(i));
-      
-      Inc(i);
+      raise;
     end;
   end;
   
-  // Show help or execute command
-  if ShowMainHelp then
-  begin
-    ShowHelp;
-    Exit;
+  GProgram := nil;
+  
+  try
+    Prog.Free;
+  except
+    on E: Exception do
+    begin
+      raise;
+    end;
   end;
   
-  if Command = AnsiString('commit') then
-    RunCommitCommand(CustomPrompt, StageChanges)
-  else if Command = AnsiString('changelog') then
-    RunChangelogCommand
-  else
-  begin
-    writeln('Error: Unknown command "', Command, '"');
-    writeln('');
-    ShowHelp;
-    Halt(1);
+  // Add a small delay to ensure all background cleanup is complete
+  Sleep(50);
+end;
+
+
+initialization
+
+finalization
+  try
+    if Assigned(GProgram) then
+    begin
+      GProgram := nil;
+    end;
+  except
+    // Silently ignore finalization exceptions
   end;
+
 end.
+
+// Testing

@@ -119,7 +119,9 @@ The project uses:
 
 ```
 src/
-└── app.pas              # Main application logic
+├── gitpal.pas           # Main CLI entry point
+├── command_commit.pas   # Commit message generation
+└── command_changelog.pas # Changelog generation
 
 vendor/
 ├── bobaui/             # TUI framework
