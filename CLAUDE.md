@@ -162,7 +162,6 @@ This process will:
 4. Requires updating Makefile to use new version path
 5. Optionally remove old version directories
 
-**Current version**: v0.1.15 (located in `vendor/bobaui/v0.1.15/`)
 
 ## Release Process
 
@@ -189,6 +188,3 @@ To create a new release of GitPal:
    - Upload binaries as release assets
    - Update Homebrew formula (if configured)
 
-**Version history**:
-- v0.0.5: Current stable version
-- v0.0.6: Next version (cursor hiding improvements)
