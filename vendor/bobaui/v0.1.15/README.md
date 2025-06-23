@@ -171,6 +171,7 @@ Commands are **functions** that perform I/O operations and eventually produce me
 // Examples of commands
 QuitCmd              // Tell framework to exit
 TickCmd('timer', 100)         // Schedule a component timer tick in 100ms
+BatchCmd([cmd1, cmd2])        // Execute multiple commands sequentially
 HttpRequestCmd       // Make HTTP request (hypothetical)
 ```
 
@@ -340,6 +341,37 @@ You can also define your own custom message types by creating new classes, thoug
 Commands (`TCmd`) are for performing actions that have side effects, like quitting the application or making an HTTP request. Your `Update` function can return a command along with the new model.
 
 The most common command is `bobaui.QuitCmd`, which tells the runtime to exit.
+
+### Command Batching
+
+When you need to execute multiple commands from a single `Update` call, use `BatchCmd`:
+
+```pascal
+function TMyModel.Update(const Msg: TMsg): TUpdateResult;
+begin
+  Result.Model := Self;
+  Result.Cmd := nil;
+
+  if Msg is TWindowSizeMsg then
+  begin
+    // Execute multiple commands sequentially
+    Result.Cmd := bobaui.BatchCmd([
+      bobaui.HideCursorCmd,          // Hide cursor
+      FSpinner.Tick                  // Start spinner animation
+    ]);
+  end;
+end;
+```
+
+`BatchCmd` executes the commands sequentially in the order provided. Any `nil` commands are automatically filtered out, making it safe to use with conditional commands.
+
+**Example use cases:**
+- Hide cursor and start animation simultaneously
+- Save data and update UI state together  
+- Display message and play sound notification
+- Initialize multiple components at startup
+
+See `examples/batch_demo.pas` for a complete working example.
 
 ## Styling
 

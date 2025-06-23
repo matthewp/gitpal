@@ -48,6 +48,7 @@ type
     FAsyncState: TAsyncOperationState;
     FCurrentOperation: TAsyncOperation;
     FOperationId: string;
+    FCursorHidden: Boolean;
     
     procedure StartCommitGeneration;
     procedure CancelCurrentOperation;
@@ -424,6 +425,7 @@ begin
   FAsyncState := osIdle;
   FCurrentOperation := nil;
   FOperationId := AnsiString('');
+  FCursorHidden := False;
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -453,6 +455,7 @@ begin
   FAsyncState := osIdle;
   FCurrentOperation := nil;
   FOperationId := AnsiString('');
+  FCursorHidden := False;
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -482,6 +485,7 @@ begin
   FAsyncState := osIdle;
   FCurrentOperation := nil;
   FOperationId := AnsiString('');
+  FCursorHidden := False;
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -827,15 +831,27 @@ begin
     LogToFile('TCommitModel.Update: Window size message - width=' + IntToStr(FTerminalWidth) + ', height=' + IntToStr(FTerminalHeight) + ', AsyncState=' + IntToStr(Ord(FAsyncState)) + ', CurrentOperation assigned=' + BoolToStr(Assigned(FCurrentOperation)));
     {$ENDIF}
     
-    // If we're waiting to generate and just got window size, start the generation
-    if (FAsyncState = osIdle) and (FGenerating) and (not Assigned(FCurrentOperation)) then
+    // Hide cursor on first window size message (initialization)
+    if not FCursorHidden then
     begin
-      {$IFDEF GITPAL_DEBUG}
-      LogToFile('TCommitModel.Update: Starting async commit generation from window size message');
-      {$ENDIF}
-      // Start spinner animation and async commit generation
-      StartCommitGeneration;
-      Result.Cmd := FSpinner.Tick;
+      FCursorHidden := True;
+      
+      // If we're waiting to generate and just got window size, start the generation
+      if (FAsyncState = osIdle) and (FGenerating) and (not Assigned(FCurrentOperation)) then
+      begin
+        {$IFDEF GITPAL_DEBUG}
+        LogToFile('TCommitModel.Update: Starting async commit generation from window size message');
+        {$ENDIF}
+        // Start spinner animation and async commit generation
+        StartCommitGeneration;
+        // Execute multiple commands: hide cursor and start ticker
+        Result.Cmd := bobaui.BatchCmd([bobaui.HideCursorCmd, FSpinner.Tick]);
+      end
+      else
+      begin
+        // Just hide cursor
+        Result.Cmd := bobaui.HideCursorCmd;
+      end;
     end;
   end;
 end;

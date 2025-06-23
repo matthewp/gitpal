@@ -140,6 +140,23 @@ type
     property Interval: integer read FInterval;
   end;
 
+  // Forward declaration for command type
+  TCommand = class;
+  TCmd = TCommand;
+
+  // Batch message for executing multiple commands sequentially
+  TBatchMsg = class(TMsg)
+  private
+    FCommands: array of TCmd;
+    function GetCommand(Index: Integer): TCmd;
+    function GetCommandCount: Integer;
+  public
+    constructor Create(const ACommands: array of TCmd);
+    destructor Destroy; override;
+    property Commands[Index: Integer]: TCmd read GetCommand;
+    property CommandCount: Integer read GetCommandCount;
+  end;
+
   // Command pattern implementation
   TCommand = class
   public
@@ -183,8 +200,15 @@ type
     function Execute: TMsg; override;
   end;
 
-  // Command type (command object)
-  TCmd = TCommand;
+  // Batch command for executing multiple commands sequentially
+  TBatchCommand = class(TCommand)
+  private
+    FCommands: array of TCmd;
+  public
+    constructor Create(const ACommands: array of TCmd);
+    destructor Destroy; override;
+    function Execute: TMsg; override;
+  end;
 
   // Message queue for thread-safe communication
   TMessageQueue = class
@@ -550,12 +574,16 @@ type
     procedure Quit;
     procedure ScheduleComponentTick(const ComponentId: string; Interval: integer);
     procedure SetDisplayMode(AMode: TDisplayMode);
+    procedure Send(const Msg: TMsg);
   end;
 
 // Common commands
 function QuitCmd: TCmd;
 function ShowCursorCmd: TCmd;
 function HideCursorCmd: TCmd;
+
+// Command batching
+function BatchCmd(const Commands: array of TCmd): TCmd;
 
 // Animation commands
 function TickCmd(const ComponentId: string; Interval: integer): TCmd; // Create tick command
@@ -1031,6 +1059,40 @@ begin
   FInterval := AInterval;
 end;
 
+constructor TBatchMsg.Create(const ACommands: array of TCmd);
+var
+  i: Integer;
+begin
+  inherited Create;
+  SetLength(FCommands, Length(ACommands));
+  for i := 0 to High(ACommands) do
+    FCommands[i] := ACommands[i];
+end;
+
+destructor TBatchMsg.Destroy;
+var
+  i: Integer;
+begin
+  for i := 0 to High(FCommands) do
+    if Assigned(FCommands[i]) then
+      FCommands[i].Free;
+  SetLength(FCommands, 0);
+  inherited Destroy;
+end;
+
+function TBatchMsg.GetCommand(Index: Integer): TCmd;
+begin
+  if (Index >= 0) and (Index <= High(FCommands)) then
+    Result := FCommands[Index]
+  else
+    Result := nil;
+end;
+
+function TBatchMsg.GetCommandCount: Integer;
+begin
+  Result := Length(FCommands);
+end;
+
 constructor TAddOverlayMsg.Create(AContent: TModel; APosition: TRect; AZIndex: Integer);
 begin
   inherited Create;
@@ -1079,6 +1141,35 @@ function TTickCommand.Execute: TMsg;
 begin
   // Return a scheduling message that the framework will handle
   Result := TScheduleTickMsg.Create(FComponentId, FInterval);
+end;
+
+constructor TBatchCommand.Create(const ACommands: array of TCmd);
+var
+  i: Integer;
+begin
+  inherited Create;
+  SetLength(FCommands, Length(ACommands));
+  for i := 0 to High(ACommands) do
+    FCommands[i] := ACommands[i];
+end;
+
+destructor TBatchCommand.Destroy;
+var
+  i: Integer;
+begin
+  for i := 0 to High(FCommands) do
+    if Assigned(FCommands[i]) then
+      FCommands[i].Free;
+  SetLength(FCommands, 0);
+  inherited Destroy;
+end;
+
+function TBatchCommand.Execute: TMsg;
+begin
+  Result := TBatchMsg.Create(FCommands);
+  
+  // Don't free sub-commands here - TBatchMsg now owns them
+  SetLength(FCommands, 0);
 end;
 
 constructor TAddOverlayCommand.Create(AContent: TModel; APosition: TRect; AZIndex: Integer);
@@ -2643,6 +2734,12 @@ begin
     FMessageQueue.Push(TWindowSizeMsg.Create(Width, Height));
 end;
 
+procedure TBobaUIProgram.Send(const Msg: TMsg);
+begin
+  if Assigned(FMessageQueue) then
+    FMessageQueue.Push(Msg);
+end;
+
 // Old command implementations removed - now using command pattern
 
 function QuitCmd: TCmd;
@@ -2658,6 +2755,32 @@ end;
 function HideCursorCmd: TCmd;
 begin
   Result := THideCursorCommand.Create;
+end;
+
+function BatchCmd(const Commands: array of TCmd): TCmd;
+var
+  ValidCommands: array of TCmd;
+  i, ValidCount: Integer;
+begin
+  // Filter out nil commands
+  ValidCount := 0;
+  SetLength(ValidCommands, Length(Commands));
+  for i := 0 to High(Commands) do
+  begin
+    if Assigned(Commands[i]) then
+    begin
+      ValidCommands[ValidCount] := Commands[i];
+      Inc(ValidCount);
+    end;
+  end;
+  SetLength(ValidCommands, ValidCount);
+  
+  // Return appropriate result based on valid command count
+  case ValidCount of
+    0: Result := nil;
+    1: Result := ValidCommands[0];
+    else Result := TBatchCommand.Create(ValidCommands);
+  end;
 end;
 
 function TickCmd(const ComponentId: string; Interval: integer): TCmd;
@@ -2841,6 +2964,9 @@ var
   OldModel: TModel;
   InitialSize: TWindowSizeMsg;
   NewContent: string;
+  BatchMsg: TBatchMsg;
+  I: Integer;
+  BatchCmdMsg: TMsg;
 begin
   // Start the input thread
   FInputThread.Start;
@@ -2921,6 +3047,51 @@ begin
             begin
               // Handle tick scheduling - call the method that was previously called via global
               ScheduleComponentTick(TScheduleTickMsg(CmdMsg).ComponentId, TScheduleTickMsg(CmdMsg).Interval);
+              CmdMsg.Free;
+            end
+            else if CmdMsg is TBatchMsg then
+            begin
+              // Execute all commands in the batch sequentially
+              BatchMsg := TBatchMsg(CmdMsg);
+              for I := 0 to BatchMsg.CommandCount - 1 do
+              begin
+                if Assigned(BatchMsg.Commands[I]) then
+                begin
+                  BatchCmdMsg := BatchMsg.Commands[I].Execute;
+                  if Assigned(BatchCmdMsg) then
+                  begin
+                    // Handle the sub-command message immediately instead of queuing
+                    if BatchCmdMsg is TQuitMsg then
+                    begin
+                      Quit;
+                      BatchCmdMsg.Free;
+                    end
+                    else if BatchCmdMsg is TShowCursorMsg then
+                    begin
+                      if FDisplay is TAnsiDisplay then
+                        TAnsiDisplay(FDisplay).WriteAnsiSequence(ANSI_CURSOR_SHOW);
+                      BatchCmdMsg.Free;
+                    end
+                    else if BatchCmdMsg is THideCursorMsg then
+                    begin
+                      if FDisplay is TAnsiDisplay then
+                        TAnsiDisplay(FDisplay).WriteAnsiSequence(ANSI_CURSOR_HIDE);
+                      BatchCmdMsg.Free;
+                    end
+                    else if BatchCmdMsg is TScheduleTickMsg then
+                    begin
+                      // Handle tick scheduling
+                      ScheduleComponentTick(TScheduleTickMsg(BatchCmdMsg).ComponentId, TScheduleTickMsg(BatchCmdMsg).Interval);
+                      BatchCmdMsg.Free;
+                    end
+                    else
+                    begin
+                      // For other message types, push to queue
+                      FMessageQueue.Push(BatchCmdMsg);
+                    end;
+                  end;
+                end;
+              end;
               CmdMsg.Free;
             end
             else
