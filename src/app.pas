@@ -4,9 +4,7 @@ program app;
 {$codepage UTF8}
 {$H+}
 
-{* Commented out debug logging
 {$DEFINE GITPAL_DEBUG} // Enable debug logging
-*}
 
 uses
   bobaui,
@@ -14,12 +12,26 @@ uses
   bobacomponents,
   models,
   SysUtils,
-  Process;
+  Process,
+  Classes,
+  SyncObjs;
 
 const
   AppVersion = '0.0.3';  // Update this when tagging new releases
 
 type
+  // Forward declarations
+  TAsyncOperation = class;
+  TAsyncOperationThread = class;
+
+  // Async operation state enumeration
+  TAsyncOperationState = (
+    osIdle,           // No operation running
+    osGenerating,     // Generating commit message
+    osCommitting,     // Executing git commit
+    osCancelling      // Cancelling current operation
+  );
+
   TCommitModel = class(bobaui.TModel)
   private
     FTerminalWidth, FTerminalHeight: integer;
@@ -33,6 +45,14 @@ type
     FDiffContent: string;
     FCustomPrompt: string;
     FGenerationStarted: Boolean;
+    // Async operation fields
+    FAsyncState: TAsyncOperationState;
+    FCurrentOperation: TAsyncOperation;
+    FOperationId: string;
+    
+    procedure StartCommitGeneration;
+    procedure CancelCurrentOperation;
+    function GenerateOperationId: string;
   public
     constructor Create; overload;
     constructor Create(const ACommitMessage: string); overload;
@@ -49,17 +69,343 @@ type
     constructor Create(const ACommitMessage: string);
   end;
 
+  // Base class for async operation results
+  TAsyncResultMsg = class(bobaui.TMsg)
+  private
+    FOperationId: string;
+    FSuccess: Boolean;
+    FErrorMessage: string;
+  public
+    constructor Create(const AOperationId: string; ASuccess: Boolean; 
+                     const AErrorMessage: string = '');
+    property OperationId: string read FOperationId;
+    property Success: Boolean read FSuccess;
+    property ErrorMessage: string read FErrorMessage;
+  end;
+
+  // Enhanced commit generation result message
+  TAsyncCommitGeneratedMsg = class(TAsyncResultMsg)
+  private
+    FCommitMessage: string;
+  public
+    constructor Create(const AOperationId: string; const ACommitMessage: string);
+    constructor CreateError(const AOperationId: string; const AErrorMessage: string);
+    property CommitMessage: string read FCommitMessage;
+  end;
+
+  // Git commit completion message
+  TAsyncGitCommitCompletedMsg = class(TAsyncResultMsg)
+  public
+    constructor Create(const AOperationId: string; ASuccess: Boolean; 
+                     const AErrorMessage: string = '');
+  end;
+
+  // Base class for background operations
+  TAsyncOperation = class
+  private
+    FThread: TAsyncOperationThread;
+    FOperationId: string;
+    FIsRunning: Boolean;
+    FCS: TCriticalSection;
+  protected
+    // Override this method to implement the actual operation
+    function ExecuteOperation: bobaui.TMsg; virtual; abstract;
+  public
+    constructor Create(const AOperationId: string);
+    destructor Destroy; override;
+    procedure Start;
+    procedure Cancel;
+    function IsRunning: Boolean;
+    property OperationId: string read FOperationId;
+  end;
+
+  // Background thread for async operations
+  TAsyncOperationThread = class(TThread)
+  private
+    FOperation: TAsyncOperation;
+    FOperationId: string;
+  protected
+    procedure Execute; override;
+    procedure PostResultToMainThread(AResultMsg: bobaui.TMsg);
+  public
+    constructor Create(AOperation: TAsyncOperation; const AOperationId: string);
+  end;
+
+  // Specific async operation for commit message generation
+  TAsyncCommitGeneration = class(TAsyncOperation)
+  private
+    FDiffContent: string;
+    FCustomPrompt: string;
+  protected
+    function ExecuteOperation: bobaui.TMsg; override;
+  public
+    constructor Create(const AOperationId: string; const ADiffContent: string; const ACustomPrompt: string);
+  end;
+
+// Global variable for thread communication - reference to the BobaUI program
+var
+  GProgram: TBobaUIProgram = nil;
+
 // Forward declarations
 {$IFDEF GITPAL_DEBUG}
 procedure LogToFile(const LogMessage: string; const FileName: string = 'gitpal-debug.log'); forward;
 {$ENDIF}
 function ExecuteGitCommit(const CommitMessage: string; out ErrorMessage: string): Boolean; forward;
+function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''): string; forward;
 function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string): bobaui.TCmd; forward;
 
 constructor TCommitGeneratedMsg.Create(const ACommitMessage: string);
 begin
   inherited Create;
   CommitMessage := ACommitMessage;
+end;
+
+// TAsyncResultMsg implementations
+constructor TAsyncResultMsg.Create(const AOperationId: string; ASuccess: Boolean; 
+                                 const AErrorMessage: string);
+begin
+  inherited Create;
+  FOperationId := AOperationId;
+  FSuccess := ASuccess;
+  FErrorMessage := AErrorMessage;
+end;
+
+// TAsyncCommitGeneratedMsg implementations
+constructor TAsyncCommitGeneratedMsg.Create(const AOperationId: string; const ACommitMessage: string);
+begin
+  inherited Create(AOperationId, True, '');
+  FCommitMessage := ACommitMessage;
+end;
+
+constructor TAsyncCommitGeneratedMsg.CreateError(const AOperationId: string; const AErrorMessage: string);
+begin
+  inherited Create(AOperationId, False, AErrorMessage);
+  FCommitMessage := '';
+end;
+
+// TAsyncGitCommitCompletedMsg implementations
+constructor TAsyncGitCommitCompletedMsg.Create(const AOperationId: string; ASuccess: Boolean; 
+                                             const AErrorMessage: string);
+begin
+  inherited Create(AOperationId, ASuccess, AErrorMessage);
+end;
+
+// TAsyncOperation implementations
+constructor TAsyncOperation.Create(const AOperationId: string);
+begin
+  inherited Create;
+  FOperationId := AOperationId;
+  FIsRunning := False;
+  FThread := nil;
+  FCS := TCriticalSection.Create;
+end;
+
+destructor TAsyncOperation.Destroy;
+begin
+  Cancel;
+  FCS.Free;
+  inherited Destroy;
+end;
+
+procedure TAsyncOperation.Start;
+begin
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('TAsyncOperation.Start: Starting operation ' + FOperationId);
+  {$ENDIF}
+  FCS.Enter;
+  try
+    if not FIsRunning then
+    begin
+      FIsRunning := True;
+      FThread := TAsyncOperationThread.Create(Self, FOperationId);
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TAsyncOperation.Start: Created thread for operation ' + FOperationId);
+      {$ENDIF}
+      FThread.Start;
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TAsyncOperation.Start: Started thread for operation ' + FOperationId);
+      {$ENDIF}
+    end;
+  finally
+    FCS.Leave;
+  end;
+end;
+
+procedure TAsyncOperation.Cancel;
+begin
+  FCS.Enter;
+  try
+    if FIsRunning and Assigned(FThread) then
+    begin
+      FThread.Terminate;
+      FThread.WaitFor;
+      FThread.Free;
+      FThread := nil;
+      FIsRunning := False;
+    end;
+  finally
+    FCS.Leave;
+  end;
+end;
+
+function TAsyncOperation.IsRunning: Boolean;
+begin
+  FCS.Enter;
+  try
+    Result := FIsRunning;
+  finally
+    FCS.Leave;
+  end;
+end;
+
+// Note: TAsyncMessageQueue class removed - now using BobaUI's built-in Program.Send() method
+
+// TAsyncCommitGeneration implementations
+constructor TAsyncCommitGeneration.Create(const AOperationId: string; const ADiffContent: string; const ACustomPrompt: string);
+begin
+  inherited Create(AOperationId);
+  FDiffContent := ADiffContent;
+  FCustomPrompt := ACustomPrompt;
+end;
+
+function TAsyncCommitGeneration.ExecuteOperation: bobaui.TMsg;
+var
+  CommitMessage: string;
+begin
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('TAsyncCommitGeneration.ExecuteOperation: Starting commit generation for operation ' + FOperationId);
+  {$ENDIF}
+  try
+    CommitMessage := GenerateCommitMessage(FDiffContent, FCustomPrompt);
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('TAsyncCommitGeneration.ExecuteOperation: Got commit message: ' + Copy(CommitMessage, 1, 100) + '...');
+    {$ENDIF}
+    if Pos('Error:', CommitMessage) = 1 then
+    begin
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TAsyncCommitGeneration.ExecuteOperation: Error in commit message: ' + CommitMessage);
+      {$ENDIF}
+      Result := TAsyncCommitGeneratedMsg.CreateError(FOperationId, CommitMessage);
+    end
+    else
+    begin
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TAsyncCommitGeneration.ExecuteOperation: Success, creating result message');
+      {$ENDIF}
+      Result := TAsyncCommitGeneratedMsg.Create(FOperationId, CommitMessage);
+    end;
+  except
+    on E: Exception do
+    begin
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TAsyncCommitGeneration.ExecuteOperation: Exception: ' + E.Message);
+      {$ENDIF}
+      Result := TAsyncCommitGeneratedMsg.CreateError(FOperationId, 'Exception: ' + E.Message);
+    end;
+  end;
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('TAsyncCommitGeneration.ExecuteOperation: Completed operation ' + FOperationId);
+  {$ENDIF}
+end;
+
+// TAsyncOperationThread implementations
+constructor TAsyncOperationThread.Create(AOperation: TAsyncOperation; const AOperationId: string);
+begin
+  inherited Create(False); // Create suspended
+  FOperation := AOperation;
+  FOperationId := AOperationId;
+  FreeOnTerminate := False; // We'll manage the lifetime manually
+end;
+
+procedure TAsyncOperationThread.PostResultToMainThread(AResultMsg: bobaui.TMsg);
+begin
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('TAsyncOperationThread.PostResultToMainThread: Posting result for operation ' + FOperationId);
+  {$ENDIF}
+  // Use BobaUI's new Send() method for thread-safe message sending
+  if Assigned(GProgram) and Assigned(AResultMsg) then
+  begin
+    GProgram.Send(AResultMsg);
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('TAsyncOperationThread.PostResultToMainThread: Successfully sent message via Program.Send()');
+    {$ENDIF}
+  end
+  else
+  begin
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('TAsyncOperationThread.PostResultToMainThread: ERROR - GProgram or AResultMsg is nil');
+    {$ENDIF}
+  end;
+end;
+
+procedure TAsyncOperationThread.Execute;
+var
+  ResultMsg: bobaui.TMsg;
+begin
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('TAsyncOperationThread.Execute: Starting thread execution for operation ' + FOperationId);
+  {$ENDIF}
+  try
+    if not Terminated then
+    begin
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TAsyncOperationThread.Execute: Calling ExecuteOperation for ' + FOperationId);
+      {$ENDIF}
+      // Execute the actual operation
+      ResultMsg := FOperation.ExecuteOperation;
+      
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TAsyncOperationThread.Execute: ExecuteOperation completed for ' + FOperationId);
+      {$ENDIF}
+      
+      // Post result back to main thread
+      if not Terminated and Assigned(ResultMsg) then
+      begin
+        {$IFDEF GITPAL_DEBUG}
+        LogToFile('TAsyncOperationThread.Execute: Posting result to main thread for ' + FOperationId);
+        {$ENDIF}
+        PostResultToMainThread(ResultMsg);
+      end
+      else
+      begin
+        {$IFDEF GITPAL_DEBUG}
+        LogToFile('TAsyncOperationThread.Execute: Cannot post result - Terminated=' + BoolToStr(Terminated) + ', ResultMsg assigned=' + BoolToStr(Assigned(ResultMsg)));
+        {$ENDIF}
+      end;
+    end
+    else
+    begin
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TAsyncOperationThread.Execute: Thread was terminated before execution for ' + FOperationId);
+      {$ENDIF}
+    end;
+  except
+    on E: Exception do
+    begin
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TAsyncOperationThread.Execute: Exception in thread: ' + E.Message);
+      {$ENDIF}
+      // Create error message
+      ResultMsg := TAsyncCommitGeneratedMsg.CreateError(FOperationId, 'Thread exception: ' + E.Message);
+      PostResultToMainThread(ResultMsg);
+    end;
+  end;
+  
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('TAsyncOperationThread.Execute: Marking operation as no longer running for ' + FOperationId);
+  {$ENDIF}
+  
+  // Mark operation as no longer running
+  FOperation.FCS.Enter;
+  try
+    FOperation.FIsRunning := False;
+  finally
+    FOperation.FCS.Leave;
+  end;
+  
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('TAsyncOperationThread.Execute: Thread execution completed for ' + FOperationId);
+  {$ENDIF}
 end;
 
 constructor TCommitModel.Create;
@@ -75,6 +421,10 @@ begin
   FDiffContent := AnsiString('');
   FCustomPrompt := AnsiString('');
   FGenerationStarted := False;
+  // Initialize async fields
+  FAsyncState := osIdle;
+  FCurrentOperation := nil;
+  FOperationId := AnsiString('');
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -100,6 +450,10 @@ begin
   FDiffContent := AnsiString('');
   FCustomPrompt := AnsiString('');
   FGenerationStarted := False;
+  // Initialize async fields
+  FAsyncState := osIdle;
+  FCurrentOperation := nil;
+  FOperationId := AnsiString('');
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -125,6 +479,10 @@ begin
   FDiffContent := ADiffContent;
   FCustomPrompt := ACustomPrompt;
   FGenerationStarted := False;
+  // Initialize async fields - start in idle state, will transition to generating when operation starts
+  FAsyncState := osIdle;
+  FCurrentOperation := nil;
+  FOperationId := AnsiString('');
   
   FList := bobacomponents.TList.Create;
   FList.AddItem(AnsiString('Accept'));
@@ -140,6 +498,12 @@ end;
 
 destructor TCommitModel.Destroy;
 begin
+  // Cancel any running async operation
+  if Assigned(FCurrentOperation) then
+  begin
+    FCurrentOperation.Cancel;
+    FCurrentOperation.Free;
+  end;
   FList.Free;
   FSpinner.Free;
   inherited Destroy;
@@ -152,7 +516,6 @@ var
   BorderedMessage: string;
   PaddedContent: string;
   Sections: array of string;
-  SectionCount: integer;
 begin
   // Handle initial state gracefully when terminal size is unknown
   if FTerminalWidth <= 0 then
@@ -202,6 +565,53 @@ begin
   end;
   
   Result := bobastyle.JoinVertical(Sections);
+end;
+
+// TCommitModel helper methods
+function TCommitModel.GenerateOperationId: string;
+begin
+  Result := 'op_' + IntToStr(GetTickCount64);
+end;
+
+procedure TCommitModel.StartCommitGeneration;
+begin
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('TCommitModel.StartCommitGeneration: Current state = ' + IntToStr(Ord(FAsyncState)));
+  {$ENDIF}
+  if FAsyncState = osIdle then
+  begin
+    FOperationId := GenerateOperationId;
+    FAsyncState := osGenerating;
+    
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('TCommitModel.StartCommitGeneration: Starting operation ' + FOperationId + ' with diff length ' + IntToStr(Length(FDiffContent)));
+    {$ENDIF}
+    
+    // Create and start the async operation
+    FCurrentOperation := TAsyncCommitGeneration.Create(FOperationId, FDiffContent, FCustomPrompt);
+    FCurrentOperation.Start;
+    
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('TCommitModel.StartCommitGeneration: Operation started successfully');
+    {$ENDIF}
+  end
+  else
+  begin
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('TCommitModel.StartCommitGeneration: Cannot start - already in state ' + IntToStr(Ord(FAsyncState)));
+    {$ENDIF}
+  end;
+end;
+
+procedure TCommitModel.CancelCurrentOperation;
+begin
+  if Assigned(FCurrentOperation) then
+  begin
+    FCurrentOperation.Cancel;
+    FCurrentOperation.Free;
+    FCurrentOperation := nil;
+  end;
+  FAsyncState := osIdle;
 end;
 
 function ExecuteGitCommit(const CommitMessage: string; out ErrorMessage: string): Boolean;
@@ -261,12 +671,58 @@ var
   ListSelectionMsg: bobacomponents.TListSelectionMsg;
   ComponentTickMsg: bobaui.TComponentTickMsg;
   CommitGeneratedMsg: TCommitGeneratedMsg;
+  AsyncCommitMsg: TAsyncCommitGeneratedMsg;
   NewModel: TCommitModel;
   NewList: bobacomponents.TList;
   NewSpinner: bobacomponents.TSpinner;
 begin
   Result.Model := Self;
   Result.Cmd := nil;
+
+  // Handle async messages using the new BobaUI pattern - these now come directly through the message system
+  if Msg is TAsyncCommitGeneratedMsg then
+  begin
+    AsyncCommitMsg := TAsyncCommitGeneratedMsg(Msg);
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('TCommitModel.Update: Got async commit message for operation ' + AsyncCommitMsg.OperationId + ', current operation = ' + FOperationId);
+    {$ENDIF}
+    if AsyncCommitMsg.OperationId = FOperationId then
+    begin
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TCommitModel.Update: Operation IDs match, processing result. Success = ' + BoolToStr(AsyncCommitMsg.Success));
+      {$ENDIF}
+      // This is our operation result
+      CancelCurrentOperation; // Clean up
+      
+      if AsyncCommitMsg.Success then
+      begin
+        {$IFDEF GITPAL_DEBUG}
+        LogToFile('TCommitModel.Update: Success! Creating new model with commit message: ' + Copy(AsyncCommitMsg.CommitMessage, 1, 100) + '...');
+        {$ENDIF}
+        // Success - create new model with commit message
+        NewModel := TCommitModel.Create(AsyncCommitMsg.CommitMessage);
+        NewModel.FTerminalWidth := FTerminalWidth;
+        NewModel.FTerminalHeight := FTerminalHeight;
+        Result.Model := NewModel;
+      end
+      else
+      begin
+        {$IFDEF GITPAL_DEBUG}
+        LogToFile('TCommitModel.Update: Error in async operation: ' + AsyncCommitMsg.ErrorMessage);
+        {$ENDIF}
+        // Error - show error and quit
+        writeln('Error generating commit message: ' + AsyncCommitMsg.ErrorMessage);
+        Result.Cmd := bobaui.QuitCmd;
+      end;
+    end
+    else
+    begin
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TCommitModel.Update: Operation ID mismatch, ignoring message');
+      {$ENDIF}
+    end;
+    Exit; // Don't process other messages this cycle
+  end;
 
   if Msg is bobaui.TKeyMsg then
   begin
@@ -275,6 +731,7 @@ begin
     // Handle 'q' to quit
     if (KeyMsg.Key = 'q') or (KeyMsg.Key = 'Q') then
     begin
+      CancelCurrentOperation; // Cancel any running operation
       Result.Cmd := bobaui.QuitCmd;
     end
     // If commit was executed, any key should quit
@@ -282,7 +739,7 @@ begin
     begin
       Result.Cmd := bobaui.QuitCmd;
     end
-    else if not FGenerating then  // Only handle list navigation if not generating
+    else if FAsyncState = osIdle then  // Only handle list navigation if not busy
     begin
       // Delegate keys to the list component
       NewList := FList.Update(Msg);
@@ -330,38 +787,31 @@ begin
   end
   else if Msg is bobaui.TComponentTickMsg then
   begin
-    if FGenerating then
+    if FGenerating then  // Show spinner while generating
     begin
-      ComponentTickMsg := bobaui.TComponentTickMsg(Msg);
-      
-      // On first tick, start the generation
-      if not FGenerationStarted then
+      // Update spinner during async operation
+      NewSpinner := FSpinner.Update(Msg);
+      if NewSpinner <> FSpinner then
       begin
-        FGenerationStarted := True;
-        Result.Cmd := GenerateCommitMessageCmd(FDiffContent, FCustomPrompt);
-      end
-      else
-      begin
-        // Update spinner
-        NewSpinner := FSpinner.Update(Msg);
-        if NewSpinner <> FSpinner then
-        begin
-          NewModel := TCommitModel.Create(FDiffContent, FCustomPrompt);
-          NewModel.FTerminalWidth := FTerminalWidth;
-          NewModel.FTerminalHeight := FTerminalHeight;
-          NewModel.FGenerationStarted := FGenerationStarted;
-          NewModel.FSpinner.Free;
-          NewModel.FSpinner := NewSpinner;
-          Result.Model := NewModel;
-          Result.Cmd := FSpinner.Tick; // Continue animation
-        end;
+        NewModel := TCommitModel.Create(FDiffContent, FCustomPrompt);
+        NewModel.FTerminalWidth := FTerminalWidth;
+        NewModel.FTerminalHeight := FTerminalHeight;
+        NewModel.FAsyncState := FAsyncState;
+        NewModel.FCurrentOperation := FCurrentOperation;
+        NewModel.FOperationId := FOperationId;
+        // Transfer ownership of operation to new model
+        FCurrentOperation := nil;
+        NewModel.FSpinner.Free;
+        NewModel.FSpinner := NewSpinner;
+        Result.Model := NewModel;
+        Result.Cmd := FSpinner.Tick; // Continue animation
       end;
     end;
   end
   else if Msg is TCommitGeneratedMsg then
   begin
+    // Legacy message handling - shouldn't happen with new async system
     CommitGeneratedMsg := TCommitGeneratedMsg(Msg);
-    // Create new model with the generated commit message
     NewModel := TCommitModel.Create(CommitGeneratedMsg.CommitMessage);
     NewModel.FTerminalWidth := FTerminalWidth;
     NewModel.FTerminalHeight := FTerminalHeight;
@@ -374,12 +824,19 @@ begin
     FTerminalWidth := WindowMsg.Width;
     FTerminalHeight := WindowMsg.Height;
     
-    // If we're generating and just got window size, start the generation
-    if FGenerating and (FCommitMessage = '') then
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('TCommitModel.Update: Window size message - width=' + IntToStr(FTerminalWidth) + ', height=' + IntToStr(FTerminalHeight) + ', AsyncState=' + IntToStr(Ord(FAsyncState)) + ', CurrentOperation assigned=' + BoolToStr(Assigned(FCurrentOperation)));
+    {$ENDIF}
+    
+    // If we're waiting to generate and just got window size, start the generation
+    if (FAsyncState = osIdle) and (FGenerating) and (not Assigned(FCurrentOperation)) then
     begin
-      // Start spinner animation and commit generation
+      {$IFDEF GITPAL_DEBUG}
+      LogToFile('TCommitModel.Update: Starting async commit generation from window size message');
+      {$ENDIF}
+      // Start spinner animation and async commit generation
+      StartCommitGeneration;
       Result.Cmd := FSpinner.Tick;
-      // We'll trigger commit generation on the first spinner tick
     end;
   end;
 end;
@@ -626,6 +1083,10 @@ var
   Model: TCommitModel;
   DiffContent: string;
 begin
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('RunCommitCommand: Starting commit command with custom prompt: ' + CustomPrompt);
+  {$ENDIF}
+  
   // Check if there are staged changes
   DiffContent := GetGitDiff;
   if DiffContent = '' then
@@ -634,12 +1095,38 @@ begin
     Exit;
   end;
   
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('RunCommitCommand: Got git diff with length: ' + IntToStr(Length(DiffContent)));
+  {$ENDIF}
+  
+  // Note: No need to initialize async message queue - using BobaUI's built-in Send() method
+  
   // Create model that will show spinner and generate message async
   Model := TCommitModel.Create(DiffContent, CustomPrompt);
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('RunCommitCommand: Created TCommitModel with async state');
+  {$ENDIF}
+  
   Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);
   
-  Prog.Run;
-  Prog.Free;
+  // Set the global program reference for async operations
+  GProgram := Prog;
+  
+  try
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('RunCommitCommand: Starting bobaui program');
+    {$ENDIF}
+    Prog.Run;
+    {$IFDEF GITPAL_DEBUG}
+    LogToFile('RunCommitCommand: Bobaui program finished');
+    {$ENDIF}
+  finally
+    GProgram := nil;
+    Prog.Free;
+  end;
+  {$IFDEF GITPAL_DEBUG}
+  LogToFile('RunCommitCommand: Command completed');
+  {$ENDIF}
 end;
 
 procedure RunChangelogCommand;
