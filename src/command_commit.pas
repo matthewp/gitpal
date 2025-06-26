@@ -1042,7 +1042,6 @@ var
   Prog: TBobaUIProgram;
   Model: TCommitModel;
   DiffContent: string;
-  ErrorMessage: string;
   UnstagedResult: git.TGitResult;
   AddResult: git.TGitResult;
   DiffResult: git.TGitResult;
