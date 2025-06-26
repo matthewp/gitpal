@@ -13,6 +13,7 @@ packages:
 - coreutils
 secrets:
 - 1af4b221-b0e3-4b02-99d5-b710d340983a # hut config
+- 535a657a-7f66-4b03-87c8-282f101f5c86 # SSH key
 tasks:
   - test: |
       cd gitpal
