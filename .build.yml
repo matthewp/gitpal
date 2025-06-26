@@ -82,6 +82,8 @@ tasks:
         
         # Update the formula file
         cat > Formula/gitpal.rb <<-FORMULA_EOF
+      require "formula"
+      
       class Gitpal < Formula
         desc "AI-powered git assistant CLI tool"
         homepage "https://sr.ht/~matthewp/gitpal/"
@@ -89,13 +91,13 @@ tasks:
         sha256 "${sha256}"
         license "MIT"
         
-        depends_on "fpc"
-        depends_on "cmake"
+        depends_on "fpc" => :build
+        depends_on "cmake" => :build
         depends_on "openssl@1.1"
         
         def install
           # Configure build with OpenSSL 1.1
-          system "cmake", "-B", "build", "-DCMAKE_INSTALL_PREFIX=#{prefix}", "-DOPENSSL_ROOT_DIR=#{Formula[\"openssl@1.1\"].opt_prefix}", *std_cmake_args
+          system "cmake", "-B", "build", "-DCMAKE_INSTALL_PREFIX=#{prefix}", "-DOPENSSL_ROOT_DIR=#{Formula["openssl@1.1"].opt_prefix}", *std_cmake_args
           
           # Build the project
           system "cmake", "--build", "build"
