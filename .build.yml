@@ -73,35 +73,35 @@ tasks:
         git config user.email "releases@matthewphillips.info"
         
         # Update the formula file
-        cat > Formula/gitpal.rb << EOF
-class Gitpal < Formula
-  desc "AI-powered git assistant CLI tool"
-  homepage "https://sr.ht/~matthewp/gitpal/"
-  url "$release_url"
-  sha256 "$sha256"
-  license "MIT"
-  
-  depends_on "fpc"
-  depends_on "cmake"
-  depends_on "openssl@1.1"
-  
-  def install
-    # Configure build with OpenSSL 1.1
-    system "cmake", "-B", "build", "-DCMAKE_INSTALL_PREFIX=#{prefix}", "-DOPENSSL_ROOT_DIR=#{Formula[\"openssl@1.1\"].opt_prefix}", *std_cmake_args
-    
-    # Build the project
-    system "cmake", "--build", "build"
-    
-    # Install the binary
-    bin.install "bin/gitpal"
-  end
-  
-  test do
-    system "#{bin}/gitpal", "--version"
-    system "#{bin}/gitpal", "--help"
-  end
-end
-EOF
+        cat > Formula/gitpal.rb <<-FORMULA_EOF
+      class Gitpal < Formula
+        desc "AI-powered git assistant CLI tool"
+        homepage "https://sr.ht/~matthewp/gitpal/"
+        url "${release_url}"
+        sha256 "${sha256}"
+        license "MIT"
+        
+        depends_on "fpc"
+        depends_on "cmake"
+        depends_on "openssl@1.1"
+        
+        def install
+          # Configure build with OpenSSL 1.1
+          system "cmake", "-B", "build", "-DCMAKE_INSTALL_PREFIX=#{prefix}", "-DOPENSSL_ROOT_DIR=#{Formula[\"openssl@1.1\"].opt_prefix}", *std_cmake_args
+          
+          # Build the project
+          system "cmake", "--build", "build"
+          
+          # Install the binary
+          bin.install "bin/gitpal"
+        end
+        
+        test do
+          system "#{bin}/gitpal", "--version"
+          system "#{bin}/gitpal", "--help"
+        end
+      end
+      FORMULA_EOF
         
         # Commit and push the updated formula
         git add Formula/gitpal.rb
