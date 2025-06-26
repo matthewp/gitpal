@@ -69,8 +69,12 @@ tasks:
         cd ../homebrew-gitpal
         
         # Set up SSH for pushing
-        eval $(ssh-agent -s)
-        ssh-add ~/.ssh/535a657a-7f66-4b03-87c8-282f101f5c86
+        set +x  # Don't log SSH operations
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        chmod 600 ~/.ssh/535a657a-7f66-4b03-87c8-282f101f5c86
+        export GIT_SSH_COMMAND="ssh -i ~/.ssh/535a657a-7f66-4b03-87c8-282f101f5c86 -o StrictHostKeyChecking=no"
+        set -x  # Re-enable logging
         
         # Configure git
         git config user.name "GitPal Release Bot"
