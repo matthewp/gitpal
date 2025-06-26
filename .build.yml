@@ -68,6 +68,10 @@ tasks:
         # Update the Homebrew formula
         cd ../homebrew-gitpal
         
+        # Set up SSH for pushing
+        eval $(ssh-agent -s)
+        ssh-add ~/.ssh/535a657a-7f66-4b03-87c8-282f101f5c86
+        
         # Configure git
         git config user.name "GitPal Release Bot"
         git config user.email "releases@matthewphillips.info"
