@@ -109,7 +109,7 @@ begin
       end
       else if (ParamStr(i) = '--version') or (ParamStr(i) = '-v') then
       begin
-        writeln('GitPal v', AppVersion);
+        writeln(AppVersion);
         Exit;
       end
       else if ParamStr(i) = '--prompt' then
