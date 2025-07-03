@@ -14,6 +14,7 @@ uses
   config_manager,
   provider_config,
   git,
+  logging,
   SysUtils,
   Process,
   Classes,
@@ -185,25 +186,6 @@ implementation
 // Global variable for thread communication - reference to the BobaUI program
 var
   GProgram: TBobaUIProgram = nil;
-
-procedure DebugLog(const AMessage: string);
-var
-  LogFile: TextFile;
-  LogPath: string;
-begin
-  LogPath := 'gitpal-debug.log';
-  try
-    Assign(LogFile, LogPath);
-    if FileExists(LogPath) then
-      Append(LogFile)
-    else
-      Rewrite(LogFile);
-    WriteLn(LogFile, FormatDateTime('yyyy-mm-dd hh:nn:ss', Now) + ' - ' + AMessage);
-    Close(LogFile);
-  except
-    // Silently ignore logging errors
-  end;
-end;
 
 // Forward declarations
 function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''; const ProviderOverride: string = ''): string; forward;

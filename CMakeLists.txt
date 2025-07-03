@@ -60,6 +60,7 @@ set(GITPAL_SOURCES
     src/browser_launch.pas
     src/config_manager.pas
     src/provider_config.pas
+    src/logging.pas
     # Add other source dependencies here as needed
 )
 
