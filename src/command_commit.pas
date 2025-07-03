@@ -11,8 +11,10 @@ uses
   bobastyle,
   bobacomponents,
   models,
-  gemini_provider,
+  config_manager,
+  provider_config,
   git,
+  logging,
   SysUtils,
   Process,
   Classes,
@@ -43,6 +45,7 @@ type
     FGenerating: Boolean;
     FDiffContent: string;
     FCustomPrompt: string;
+    FProviderOverride: string;
     FGenerationStarted: Boolean;
     // Async operation fields
     FAsyncState: TAsyncOperationState;
@@ -60,6 +63,7 @@ type
     constructor Create; overload;
     constructor Create(const ACommitMessage: string); overload;
     constructor Create(const ADiffContent: string; const ACustomPrompt: string); overload;
+    constructor Create(const ADiffContent: string; const ACustomPrompt: string; const AProviderOverride: string); overload;
     destructor Destroy; override;
     function View: string; override;
     function Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult; override;
@@ -150,6 +154,7 @@ type
   private
     FDiffContent: string;
     FCustomPrompt: string;
+    FProviderOverride: string;
     FCommitMessage: string;
     FStreamingFinished: Boolean;
     FStreamingError: string;
@@ -157,7 +162,7 @@ type
   protected
     function ExecuteOperation: bobaui.TMsg; override;
   public
-    constructor Create(const AOperationId: string; const ADiffContent: string; const ACustomPrompt: string);
+    constructor Create(const AOperationId: string; const ADiffContent: string; const ACustomPrompt: string; const AProviderOverride: string = '');
   end;
 
 // Command class for generating commit message asynchronously
@@ -166,13 +171,14 @@ type
   private
     FDiffContent: string;
     FCustomPrompt: string;
+    FProviderOverride: string;
   public
-    constructor Create(const ADiffContent: string; const ACustomPrompt: string);
+    constructor Create(const ADiffContent: string; const ACustomPrompt: string; const AProviderOverride: string = '');
     function Execute: bobaui.TMsg; override;
   end;
 
 // Public functions
-procedure RunCommitCommand(const CustomPrompt: string = ''; const StageChanges: Boolean = False);
+procedure RunCommitCommand(const CustomPrompt: string = ''; const StageChanges: Boolean = False; const ProviderOverride: string = '');
 
 
 implementation
@@ -182,9 +188,9 @@ var
   GProgram: TBobaUIProgram = nil;
 
 // Forward declarations
-function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''): string; forward;
-procedure GenerateCommitMessageStream(const DiffContent: string; const CustomPrompt: string; ACallback: models.TLLMStreamCallback); forward;
-function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string): bobaui.TCmd; forward;
+function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''; const ProviderOverride: string = ''): string; forward;
+procedure GenerateCommitMessageStream(const DiffContent: string; const CustomPrompt: string; ACallback: models.TLLMStreamCallback; const ProviderOverride: string = ''); forward;
+function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string; const ProviderOverride: string = ''): bobaui.TCmd; forward;
 
 constructor TCommitGeneratedMsg.Create(const ACommitMessage: string);
 begin
@@ -297,11 +303,12 @@ end;
 // Note: TAsyncMessageQueue class removed - now using BobaUI's built-in Program.Send() method
 
 // TAsyncCommitGeneration implementations
-constructor TAsyncCommitGeneration.Create(const AOperationId: string; const ADiffContent: string; const ACustomPrompt: string);
+constructor TAsyncCommitGeneration.Create(const AOperationId: string; const ADiffContent: string; const ACustomPrompt: string; const AProviderOverride: string);
 begin
   inherited Create(AOperationId);
   FDiffContent := ADiffContent;
   FCustomPrompt := ACustomPrompt;
+  FProviderOverride := AProviderOverride;
   FCommitMessage := AnsiString('');
   FStreamingFinished := False;
   FStreamingError := AnsiString('');
@@ -311,15 +318,19 @@ procedure TAsyncCommitGeneration.StreamCallback(const AChunk: string; AFinished:
 var
   StreamMsg: TAsyncStreamingChunkMsg;
 begin
+  DebugLog('[StreamCallback] Called - Finished: ' + BoolToStr(AFinished, True) + ', Chunk length: ' + IntToStr(Length(AChunk)));
+  
   if AFinished then
   begin
     FStreamingFinished := True;
+    DebugLog('[StreamCallback] Streaming finished, total message length: ' + IntToStr(Length(FCommitMessage)));
     if Pos('Error:', FCommitMessage) = 1 then
       FStreamingError := FCommitMessage;
   end
   else
   begin
     FCommitMessage := FCommitMessage + AChunk;
+    DebugLog('[StreamCallback] Current message length: ' + IntToStr(Length(FCommitMessage)));
   end;
   
   // Send real-time streaming chunk to UI
@@ -340,13 +351,18 @@ end;
 function TAsyncCommitGeneration.ExecuteOperation: bobaui.TMsg;
 begin
   try
-    GenerateCommitMessageStream(FDiffContent, FCustomPrompt, @StreamCallback);
+    DebugLog('[TAsyncCommitGeneration.ExecuteOperation] Starting async generation');
+    DebugLog('[TAsyncCommitGeneration.ExecuteOperation] DiffContent length: ' + IntToStr(Length(FDiffContent)));
+    
+    GenerateCommitMessageStream(FDiffContent, FCustomPrompt, @StreamCallback, FProviderOverride);
     
     // Wait for streaming to complete
     while not FStreamingFinished do
     begin
       Sleep(10); // Small delay to avoid busy waiting
     end;
+    
+    DebugLog('[TAsyncCommitGeneration.ExecuteOperation] Streaming finished');
     
     if FStreamingError <> '' then
     begin
@@ -450,6 +466,7 @@ begin
   FGenerating := False;
   FDiffContent := AnsiString('');
   FCustomPrompt := AnsiString('');
+  FProviderOverride := AnsiString('');
   FGenerationStarted := False;
   // Initialize async fields
   FAsyncState := osIdle;
@@ -483,6 +500,7 @@ begin
   FGenerating := False;
   FDiffContent := AnsiString('');
   FCustomPrompt := AnsiString('');
+  FProviderOverride := AnsiString('');
   FGenerationStarted := False;
   // Initialize async fields
   FAsyncState := osIdle;
@@ -516,6 +534,7 @@ begin
   FGenerating := True;
   FDiffContent := ADiffContent;
   FCustomPrompt := ACustomPrompt;
+  FProviderOverride := AnsiString('');
   FGenerationStarted := False;
   // Initialize async fields - start in idle state, will transition to generating when operation starts
   FAsyncState := osIdle;
@@ -537,6 +556,39 @@ begin
   FSpinner := bobacomponents.TSpinner.Create(bobacomponents.stDot);
 end;
 
+constructor TCommitModel.Create(const ADiffContent: string; const ACustomPrompt: string; const AProviderOverride: string);
+begin
+  inherited Create;
+  FTerminalWidth := 0;  // Will be set by WindowSizeMsg
+  FTerminalHeight := 0; // Will be set by WindowSizeMsg
+  FCommitMessage := AnsiString('');
+  FCommitExecuted := False;
+  FCommitSuccessful := False;
+  FCommitErrorMessage := AnsiString('');
+  FGenerating := True;
+  FDiffContent := ADiffContent;
+  FCustomPrompt := ACustomPrompt;
+  FProviderOverride := AProviderOverride;
+  FGenerationStarted := False;
+  // Initialize async fields - start in idle state, will transition to generating when operation starts
+  FAsyncState := osIdle;
+  FCurrentOperation := nil;
+  FOperationId := AnsiString('');
+  FCursorHidden := False;
+  // Initialize streaming fields
+  FStreamingText := AnsiString('');
+  FIsStreaming := False;
+  
+  FList := bobacomponents.TList.Create;
+  FList.AddItem(AnsiString('Accept'));
+  FList.AddItem(AnsiString('Decline'));
+  FList.Width := 30;
+  FList.Height := 5;
+  FList.ShowBorder := false;
+  FList.SelectedColor := bobastyle.cBrightBlue;
+  
+  FSpinner := bobacomponents.TSpinner.Create(bobacomponents.stDot);
+end;
 
 destructor TCommitModel.Destroy;
 begin
@@ -657,7 +709,7 @@ begin
     
     
     // Create and start the async operation
-    FCurrentOperation := TAsyncCommitGeneration.Create(FOperationId, FDiffContent, FCustomPrompt);
+    FCurrentOperation := TAsyncCommitGeneration.Create(FOperationId, FDiffContent, FCustomPrompt, FProviderOverride);
     FCurrentOperation.Start;
     
   end
@@ -868,109 +920,207 @@ end;
 
 
 
-function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''): string;
+function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''; const ProviderOverride: string = ''): string;
 var
-  GeminiProvider: gemini_provider.TGeminiProvider;
+  Config: TGitPalConfig;
+  Registry: TProviderRegistry;
+  ProviderName: AnsiString;
+  Provider: ILLMProvider;
   Messages: array of models.TLLMMessage;
   Response: models.TLLMChatCompletionResponse;
-  ApiKey: string;
   SystemPrompt: string;
   UserPrompt: string;
 begin
   Result := AnsiString('');
+  DebugLog('[GenerateCommitMessage] Starting commit message generation');
   
-  // Get API key from environment
-  ApiKey := gemini_provider.TGeminiProvider.GetApiKeyFromEnvironment;
-  if ApiKey = '' then
-  begin
-    Result := AnsiString('Error: GEMINI_API_KEY environment variable not set');
-    Exit;
-  end;
-  
-  // Create provider instance
-  GeminiProvider := gemini_provider.TGeminiProvider.Create(ApiKey);
   try
-    // Set up messages
-    SetLength(Messages, 2);
-    
-    SystemPrompt := AnsiString('You are an expert Git user and software developer. ') +
-                   AnsiString('Your task is to analyze git diffs and create detailed, well-structured commit messages. ') +
-                   AnsiString('Follow these conventions:') + #10 +
-                   AnsiString('- First line: Short title under 50 characters using imperative mood') + #10 +
-                   AnsiString('- Second line: Leave blank') + #10 +
-                   AnsiString('- Following lines: Detailed description explaining WHAT changed and WHY') + #10 +
-                   AnsiString('- Use conventional commit prefixes when appropriate (feat:, fix:, docs:, refactor:, etc.)') + #10 +
-                   AnsiString('- Include 1-2 paragraphs describing the changes in detail') + #10 +
-                   AnsiString('- Add blank lines between paragraphs for better readability') + #10 +
-                   AnsiString('- Explain the motivation and context behind the changes') + #10 +
-                   AnsiString('- Mention any important implementation details or considerations') + #10 +
-                   AnsiString('- Use imperative mood throughout (e.g., "Add feature" not "Added feature")') + #10 +
-                   AnsiString('Return ONLY the commit message, no explanations or additional formatting.');
-    
-    // Add custom prompt if provided
-    if CustomPrompt <> '' then
-      SystemPrompt := SystemPrompt + #10 + #10 + AnsiString('Additional instructions: ') + CustomPrompt;
-    
-    UserPrompt := AnsiString('Please analyze this git diff and generate an appropriate commit message:') + #10 + #10 + DiffContent;
-    
-    Messages[0].Role := models.lmrSystem;
-    Messages[0].Content := SystemPrompt;
-    Messages[1].Role := models.lmrUser;
-    Messages[1].Content := UserPrompt;
-    
+    // Load configuration
+    Config := TGitPalConfig.Create;
+    Registry := TProviderRegistry.Create;
     try
-      // Call ChatCompletion
-      Response := GeminiProvider.ChatCompletion(
-        GeminiProvider.GetDefaultModel,
-        Messages,
-        0.3,    // Lower temperature for more consistent results
-        400     // Max tokens for detailed commit message with description
-      );
-      
-      // Extract the response
-      if Length(Response.Choices) > 0 then
+      if not Config.LoadConfig then
       begin
-        Result := Response.Choices[0].Message.Content;
-      end
+        DebugLog('[GenerateCommitMessage] No configuration found');
+        Result := AnsiString('Error: No configuration found. Please run "gitpal setup" first.');
+        Exit;
+      end;
+      
+      // Determine which provider to use
+      if ProviderOverride <> '' then
+        ProviderName := AnsiString(ProviderOverride)
       else
-      begin
-        Result := AnsiString('Error: No response from LLM');
-      end;
-    except
-      on E: Exception do
-      begin
-        Result := AnsiString('Error: ' + E.Message);
-      end;
-    end;
+        ProviderName := Config.DefaultProvider;
       
-  finally
-    GeminiProvider.Free;
+      if ProviderName = '' then
+      begin
+        DebugLog('[GenerateCommitMessage] No provider specified');
+        Result := AnsiString('Error: No provider specified and no default provider configured.');
+        Exit;
+      end;
+      
+      DebugLog('[GenerateCommitMessage] Using provider: ' + string(ProviderName));
+      
+      // Create provider from config
+      try
+        Provider := Registry.CreateProviderFromConfig(Config, ProviderName);
+      except
+        on E: Exception do
+        begin
+          DebugLog('[GenerateCommitMessage] Error creating provider: ' + E.Message);
+          Result := AnsiString('Error: ' + E.Message);
+          Exit;
+        end;
+      end;
+      
+      // Set up messages
+      SetLength(Messages, 2);
+      
+      SystemPrompt := AnsiString('You are an expert Git user and software developer. ') +
+                     AnsiString('Your task is to analyze git diffs and create detailed, well-structured commit messages. ') +
+                     AnsiString('Follow these conventions:') + #10 +
+                     AnsiString('- First line: Short title under 50 characters using imperative mood') + #10 +
+                     AnsiString('- Second line: Leave blank') + #10 +
+                     AnsiString('- Following lines: Detailed description explaining WHAT changed and WHY') + #10 +
+                     AnsiString('- Use conventional commit prefixes when appropriate (feat:, fix:, docs:, refactor:, etc.)') + #10 +
+                     AnsiString('- Include 1-2 paragraphs describing the changes in detail') + #10 +
+                     AnsiString('- Add blank lines between paragraphs for better readability') + #10 +
+                     AnsiString('- Explain the motivation and context behind the changes') + #10 +
+                     AnsiString('- Mention any important implementation details or considerations') + #10 +
+                     AnsiString('- Use imperative mood throughout (e.g., "Add feature" not "Added feature")') + #10 +
+                     AnsiString('Return ONLY the commit message, no explanations or additional formatting.');
+      
+      // Add custom prompt if provided
+      if CustomPrompt <> '' then
+        SystemPrompt := SystemPrompt + #10 + #10 + AnsiString('Additional instructions: ') + CustomPrompt;
+      
+      UserPrompt := AnsiString('Please analyze this git diff and generate an appropriate commit message:') + #10 + #10 + DiffContent;
+      
+      Messages[0].Role := models.lmrSystem;
+      Messages[0].Content := SystemPrompt;
+      Messages[1].Role := models.lmrUser;
+      Messages[1].Content := UserPrompt;
+      
+      try
+        // Debug: Log before API call
+        DebugLog('[DEBUG] Calling ChatCompletion with model: ' + Provider.GetDefaultModel);
+        DebugLog('[DEBUG] Messages count: ' + IntToStr(Length(Messages)));
+        DebugLog('[DEBUG] System prompt length: ' + IntToStr(Length(SystemPrompt)));
+        DebugLog('[DEBUG] User prompt length: ' + IntToStr(Length(UserPrompt)));
+        DebugLog('[DEBUG] About to call Provider.ChatCompletion');
+        
+        // Call ChatCompletion
+        Response := Provider.ChatCompletion(
+          Provider.GetDefaultModel,
+          Messages,
+          0.3,    // Lower temperature for more consistent results
+          2000    // Max tokens: Allow for detailed commit message
+        );
+        
+        DebugLog('[DEBUG] ChatCompletion call completed');
+        
+        // Debug: Log response details
+        DebugLog('[DEBUG] Response received. Choices count: ' + IntToStr(Length(Response.Choices)));
+        
+        // Extract the response
+        if Length(Response.Choices) > 0 then
+        begin
+          DebugLog('[DEBUG] First choice content length: ' + IntToStr(Length(Response.Choices[0].Message.Content)));
+          DebugLog('[DEBUG] First choice content (first 100 chars): ' + Copy(Response.Choices[0].Message.Content, 1, 100));
+          
+          Result := Response.Choices[0].Message.Content;
+          
+          // Debug: Check if result is empty after assignment
+          if Length(Result) = 0 then
+          begin
+            DebugLog('[DEBUG] WARNING: Result is empty after assignment!');
+          end
+          else
+          begin
+            DebugLog('[DEBUG] Result length after assignment: ' + IntToStr(Length(Result)));
+          end;
+        end
+        else
+        begin
+          DebugLog('[DEBUG] ERROR: No choices in response!');
+          Result := AnsiString('Error: No response from LLM');
+        end;
+      except
+        on E: Exception do
+        begin
+          DebugLog('[DEBUG] EXCEPTION in ChatCompletion: ' + E.ClassName + ': ' + E.Message);
+          Result := AnsiString('Error: ' + E.Message);
+        end;
+      end;
+      
+    finally
+      Config.Free;
+      Registry.Free;
+    end;
+  except
+    on E: Exception do
+    begin
+      DebugLog('[GenerateCommitMessage] Top-level exception: ' + E.Message);
+      Result := AnsiString('Error: ' + E.Message);
+    end;
   end;
 end;
 
-procedure GenerateCommitMessageStream(const DiffContent: string; const CustomPrompt: string; ACallback: models.TLLMStreamCallback);
+procedure GenerateCommitMessageStream(const DiffContent: string; const CustomPrompt: string; ACallback: models.TLLMStreamCallback; const ProviderOverride: string);
 var
-  GeminiProvider: gemini_provider.TGeminiProvider;
+  Config: TGitPalConfig;
+  Registry: TProviderRegistry;
+  ProviderName: AnsiString;
+  Provider: ILLMProvider;
   Messages: array of models.TLLMMessage;
-  ApiKey: string;
   SystemPrompt: string;
   UserPrompt: string;
 begin
-  // Get API key from environment
-  ApiKey := gemini_provider.TGeminiProvider.GetApiKeyFromEnvironment;
-  if ApiKey = '' then
-  begin
-    ACallback('Error: GEMINI_API_KEY environment variable not set', True);
-    Exit;
-  end;
+  DebugLog('[GenerateCommitMessageStream] Starting streaming generation');
   
-  // Create provider instance
-  GeminiProvider := gemini_provider.TGeminiProvider.Create(ApiKey);
   try
-    // Set up messages
-    SetLength(Messages, 2);
-    
-    SystemPrompt := AnsiString('You are an expert Git user and software developer. ') +
+    // Load configuration
+    Config := TGitPalConfig.Create;
+    Registry := TProviderRegistry.Create;
+    try
+      if not Config.LoadConfig then
+      begin
+        DebugLog('[GenerateCommitMessageStream] No configuration found');
+        ACallback('Error: No configuration found. Please run "gitpal setup" first.', True);
+        Exit;
+      end;
+      
+      // Determine which provider to use
+      if ProviderOverride <> '' then
+        ProviderName := AnsiString(ProviderOverride)
+      else
+        ProviderName := Config.DefaultProvider;
+      
+      if ProviderName = '' then
+      begin
+        DebugLog('[GenerateCommitMessageStream] No provider specified');
+        ACallback('Error: No provider specified and no default provider configured.', True);
+        Exit;
+      end;
+      
+      DebugLog('[GenerateCommitMessageStream] Using provider: ' + string(ProviderName));
+      
+      // Create provider from config
+      try
+        Provider := Registry.CreateProviderFromConfig(Config, ProviderName);
+      except
+        on E: Exception do
+        begin
+          DebugLog('[GenerateCommitMessageStream] Error creating provider: ' + E.Message);
+          ACallback('Error: ' + E.Message, True);
+          Exit;
+        end;
+      end;
+      
+      // Set up messages
+      SetLength(Messages, 2);
+      
+      SystemPrompt := AnsiString('You are an expert Git user and software developer. ') +
                    AnsiString('Your task is to analyze git diffs and create detailed, well-structured commit messages. ') +
                    AnsiString('Follow these conventions:') + #10 +
                    AnsiString('- First line: Short title under 50 characters using imperative mood') + #10 +
@@ -995,49 +1145,64 @@ begin
     Messages[1].Role := models.lmrUser;
     Messages[1].Content := UserPrompt;
     
-    try
-      // Call ChatCompletionStream
-      GeminiProvider.ChatCompletionStream(
-        GeminiProvider.GetDefaultModel,
-        Messages,
-        ACallback,
-        0.3,    // Lower temperature for more consistent results
-        400     // Max tokens for detailed commit message with description
-      );
-    except
-      on E: Exception do
-      begin
-        ACallback('Error: ' + E.Message, True);
+      try
+        DebugLog('[GenerateCommitMessageStream] About to call ChatCompletionStream');
+        DebugLog('[GenerateCommitMessageStream] Model: ' + Provider.GetDefaultModel);
+        
+        // Call ChatCompletionStream
+        Provider.ChatCompletionStream(
+          Provider.GetDefaultModel,
+          Messages,
+          ACallback,
+          0.3,    // Lower temperature for more consistent results
+          2000    // Max tokens: Allow for detailed commit message
+        );
+        
+        DebugLog('[GenerateCommitMessageStream] ChatCompletionStream call completed');
+      except
+        on E: Exception do
+        begin
+          DebugLog('[GenerateCommitMessageStream] Exception: ' + E.Message);
+          ACallback('Error: ' + E.Message, True);
+        end;
       end;
+        
+    finally
+      Config.Free;
+      Registry.Free;
     end;
-      
-  finally
-    GeminiProvider.Free;
+  except
+    on E: Exception do
+    begin
+      DebugLog('[GenerateCommitMessageStream] Top-level exception: ' + E.Message);
+      ACallback('Error: ' + E.Message, True);
+    end;
   end;
 end;
 
-constructor TGenerateCommitMessageCommand.Create(const ADiffContent: string; const ACustomPrompt: string);
+constructor TGenerateCommitMessageCommand.Create(const ADiffContent: string; const ACustomPrompt: string; const AProviderOverride: string);
 begin
   inherited Create;
   FDiffContent := ADiffContent;
   FCustomPrompt := ACustomPrompt;
+  FProviderOverride := AProviderOverride;
 end;
 
 function TGenerateCommitMessageCommand.Execute: bobaui.TMsg;
 var
   CommitMessage: string;
 begin
-  CommitMessage := GenerateCommitMessage(FDiffContent, FCustomPrompt);
+  CommitMessage := GenerateCommitMessage(FDiffContent, FCustomPrompt, FProviderOverride);
   Result := TCommitGeneratedMsg.Create(CommitMessage);
 end;
 
 // Helper function to create the command
-function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string): bobaui.TCmd;
+function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string; const ProviderOverride: string): bobaui.TCmd;
 begin
-  Result := TGenerateCommitMessageCommand.Create(DiffContent, CustomPrompt);
+  Result := TGenerateCommitMessageCommand.Create(DiffContent, CustomPrompt, ProviderOverride);
 end;
 
-procedure RunCommitCommand(const CustomPrompt: string = ''; const StageChanges: Boolean = False);
+procedure RunCommitCommand(const CustomPrompt: string = ''; const StageChanges: Boolean = False; const ProviderOverride: string = '');
 var
   Prog: TBobaUIProgram;
   Model: TCommitModel;
@@ -1088,7 +1253,7 @@ begin
   end;
   
   // Create model that will show spinner and generate message async
-  Model := TCommitModel.Create(DiffContent, CustomPrompt);
+  Model := TCommitModel.Create(DiffContent, CustomPrompt, ProviderOverride);
   
   Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);
   

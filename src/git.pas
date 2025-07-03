@@ -116,12 +116,13 @@ begin
     for I := 0 to High(SanitizedArgs) do
       GitProcess.Parameters.Add(SanitizedArgs[I]);
     
-    GitProcess.Options := [poUsePipes, poWaitOnExit, poStderrToOutPut];
+    // Don't use poWaitOnExit as it can cause deadlocks with piped output
+    GitProcess.Options := [poUsePipes, poStderrToOutPut];
     
     try
       GitProcess.Execute;
       
-      // Read all output
+      // Read all output without using poWaitOnExit to avoid deadlock
       OutputStr := '';
       while GitProcess.Running do
       begin
@@ -131,6 +132,7 @@ begin
           if BytesRead > 0 then
             OutputStr := OutputStr + Copy(string(Buffer), 1, BytesRead);
         end;
+        Sleep(10); // Small delay to prevent busy waiting
       end;
       
       // Read any remaining output after process ends
@@ -140,6 +142,9 @@ begin
         if BytesRead > 0 then
           OutputStr := OutputStr + Copy(string(Buffer), 1, BytesRead);
       end;
+      
+      // Wait for process to finish and get exit code
+      GitProcess.WaitOnExit;
       
       Result.ExitCode := GitProcess.ExitStatus;
       Result.Success := GitProcess.ExitStatus = 0;

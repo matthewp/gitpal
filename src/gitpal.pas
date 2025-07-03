@@ -8,10 +8,31 @@ uses
   bobaui,
   SysUtils,
   command_commit,
-  command_changelog;
+  command_changelog,
+  command_setup,
+  config_manager;
 
 const
   AppVersion = '0.0.7';  // Update this when tagging new releases
+
+function EnsureConfigurationExists: Boolean;
+var
+  Config: TGitPalConfig;
+begin
+  Result := True;
+  Config := TGitPalConfig.Create;
+  try
+    if not Config.ConfigExists then
+    begin
+      writeln('gitpal is not configured. Running setup wizard...');
+      writeln('');
+      RunSetupWizard;
+      Result := False; // Don't continue with original command
+    end;
+  finally
+    Config.Free;
+  end;
+end;
 
 procedure ShowHelp;
 begin
@@ -21,6 +42,7 @@ begin
   writeln('  gitpal [command]');
   writeln('');
   writeln('Available Commands:');
+  writeln('  setup        Configure gitpal with your AI provider');
   writeln('  commit       Generate and apply AI-powered commit messages');
   writeln('  changelog    Update CHANGELOG.md with recent changes');
   writeln('');
@@ -43,15 +65,35 @@ begin
   writeln('  using AI. You can review and accept or decline the suggestion.');
   writeln('');
   writeln('Options:');
-  writeln('  --stage          Stage all changes before generating commit message');
-  writeln('  --prompt <text>  Add custom instructions to the AI prompt');
-  writeln('  --help, -h       Show this help message');
+  writeln('  --stage              Stage all changes before generating commit message');
+  writeln('  --prompt <text>      Add custom instructions to the AI prompt');
+  writeln('  --provider <name>    Override default provider (openai, claude, gemini)');
+  writeln('  --help, -h           Show this help message');
   writeln('');
   writeln('Examples:');
   writeln('  gitpal commit');
   writeln('  gitpal commit --stage');
+  writeln('  gitpal commit --provider claude');
   writeln('  gitpal commit --stage --prompt "Focus on performance improvements"');
   writeln('  gitpal commit --prompt "Don''t mention specific technology names"');
+end;
+
+procedure ShowSetupHelp;
+begin
+  writeln('gitpal setup - Configure gitpal with your AI provider');
+  writeln('');
+  writeln('Usage:');
+  writeln('  gitpal setup [options]');
+  writeln('');
+  writeln('Description:');
+  writeln('  Interactive wizard to configure gitpal with OpenAI, Claude, or Gemini.');
+  writeln('  Guides you through provider selection, API key setup, and preferences.');
+  writeln('');
+  writeln('Options:');
+  writeln('  --help, -h   Show this help message');
+  writeln('');
+  writeln('Examples:');
+  writeln('  gitpal setup         # Start interactive setup wizard');
 end;
 
 procedure ShowChangelogHelp;
@@ -66,19 +108,22 @@ begin
   writeln('  a summary of changes organized by type (features, fixes, etc.).');
   writeln('');
   writeln('Options:');
-  writeln('  --help, -h   Show this help message');
+  writeln('  --provider <name>    Override default provider (openai, claude, gemini)');
+  writeln('  --help, -h           Show this help message');
 end;
 
 var
   Command: string;
   CustomPrompt: string;
   StageChanges: Boolean;
+  ProviderOverride: string;
   i: integer;
   ShowMainHelp: boolean;
 begin
   Command := '';
   CustomPrompt := '';
   StageChanges := False;
+  ProviderOverride := '';
   ShowMainHelp := False;
   
   // Parse command line arguments
@@ -98,6 +143,11 @@ begin
         else if Command = AnsiString('commit') then
         begin
           ShowCommitHelp;
+          Exit;
+        end
+        else if Command = AnsiString('setup') then
+        begin
+          ShowSetupHelp;
           Exit;
         end
         else if Command = AnsiString('changelog') then
@@ -130,6 +180,20 @@ begin
       begin
         StageChanges := True;
       end
+      else if ParamStr(i) = '--provider' then
+      begin
+        // Get the next parameter as the provider value
+        if i < ParamCount then
+        begin
+          Inc(i);
+          ProviderOverride := AnsiString(ParamStr(i));
+        end
+        else
+        begin
+          writeln('Error: --provider flag requires a value');
+          Halt(1);
+        end;
+      end
       else if (Command = AnsiString('')) and (ParamStr(i)[1] <> '-') then
         Command := AnsiString(ParamStr(i))
       else if (Command = AnsiString('commit')) and (ParamStr(i)[1] <> '-') then
@@ -149,11 +213,19 @@ begin
     Exit;
   end;
   
-  if Command = AnsiString('commit') then
-    RunCommitCommand(CustomPrompt, StageChanges)
+  if Command = AnsiString('setup') then
+  begin
+    RunSetupWizard;
+  end
+  else if Command = AnsiString('commit') then
+  begin
+    if EnsureConfigurationExists then
+      RunCommitCommand(CustomPrompt, StageChanges, ProviderOverride);
+  end
   else if Command = AnsiString('changelog') then
   begin
-    RunChangelogCommand;
+    if EnsureConfigurationExists then
+      RunChangelogCommand(ProviderOverride);
   end
   else
   begin

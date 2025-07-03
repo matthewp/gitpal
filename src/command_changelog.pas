@@ -11,7 +11,8 @@ uses
   bobastyle,
   bobacomponents,
   models,
-  gemini_provider,
+  config_manager,
+  provider_config,
   git,
   SysUtils,
   Process,
@@ -97,10 +98,11 @@ type
   TAsyncChangelogGeneration = class(TAsyncOperation)
   private
     FRepoPath: string;
+    FProviderOverride: string;
   protected
     function ExecuteOperation: bobaui.TMsg; override;
   public
-    constructor Create(const AOperationId: string; const ARepoPath: string = '.');
+    constructor Create(const AOperationId: string; const ARepoPath: string = '.'; const AProviderOverride: string = '');
   end;
 
 // Changelog UI Model
@@ -112,6 +114,7 @@ type
     FErrorMessage: string;
     FSuccessMessage: string;
     FIsGenerating: Boolean;
+    FProviderOverride: string;
     // Async operation fields
     FAsyncState: TAsyncOperationState;
     FCurrentOperation: TAsyncOperation;
@@ -123,7 +126,7 @@ type
     procedure CancelCurrentOperation;
     function GenerateOperationId: string;
   public
-    constructor Create;
+    constructor Create(const ProviderOverride: string = '');
     destructor Destroy; override;
     function Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult; override;
     function View: string; override;
@@ -154,7 +157,7 @@ type
   end;
 
 // Public functions for changelog command
-procedure RunChangelogCommand;
+procedure RunChangelogCommand(const ProviderOverride: string = '');
 
 implementation
 
@@ -163,7 +166,7 @@ var
   GProgram: TBobaUIProgram = nil;
 
 // Forward declaration for the original generation function
-function GenerateChangelogAsync(const RepoPath: string): string; forward;
+function GenerateChangelogAsync(const RepoPath: string; const ProviderOverride: string = ''): string; forward;
 
 { TAsyncResultMsg }
 
@@ -327,10 +330,11 @@ end;
 
 { TAsyncChangelogGeneration }
 
-constructor TAsyncChangelogGeneration.Create(const AOperationId: string; const ARepoPath: string);
+constructor TAsyncChangelogGeneration.Create(const AOperationId: string; const ARepoPath: string; const AProviderOverride: string);
 begin
   inherited Create(AOperationId);
   FRepoPath := ARepoPath;
+  FProviderOverride := AProviderOverride;
 end;
 
 function TAsyncChangelogGeneration.ExecuteOperation: bobaui.TMsg;
@@ -338,7 +342,7 @@ var
   GenerationResult: string;
 begin
   try
-    GenerationResult := GenerateChangelogAsync(FRepoPath);
+    GenerationResult := GenerateChangelogAsync(FRepoPath, FProviderOverride);
     Result := TAsyncChangelogCompletedMsg.Create(FOperationId, GenerationResult);
   except
     on E: Exception do
@@ -350,7 +354,7 @@ end;
 
 { TChangelogModel }
 
-constructor TChangelogModel.Create;
+constructor TChangelogModel.Create(const ProviderOverride: string);
 begin
   inherited Create;
   FSpinner := TSpinner.Create(stDot);
@@ -358,6 +362,7 @@ begin
   FErrorMessage := '';
   FSuccessMessage := '';
   FIsGenerating := False;
+  FProviderOverride := ProviderOverride;
   // Initialize async fields
   FAsyncState := osIdle;
   FCurrentOperation := nil;
@@ -530,7 +535,7 @@ begin
     FAsyncState := osGenerating;
     
     // Create and start the async operation
-    FCurrentOperation := TAsyncChangelogGeneration.Create(FOperationId, '.');
+    FCurrentOperation := TAsyncChangelogGeneration.Create(FOperationId, '.', FProviderOverride);
     FCurrentOperation.Start;
   end;
 end;
@@ -777,33 +782,57 @@ begin
 end;
 
 // Thread-safe procedure for changelog generation
-function GenerateChangelogAsync(const RepoPath: string): string;
+function GenerateChangelogAsync(const RepoPath: string; const ProviderOverride: string = ''): string;
 var
-  Provider: TGeminiProvider;
+  Config: TGitPalConfig;
+  Registry: TProviderRegistry;
+  ProviderName: AnsiString;
+  Provider: ILLMProvider;
   ToolContext: IToolContext;
   Messages: array of TLLMMessage;
   Tools: TToolFunctionArray;
   Response: TLLMChatCompletionResponse;
-  ApiKey: string;
 begin
   Result := '';
   
   try
-    // Get API key from environment
-    ApiKey := TGeminiProvider.GetApiKeyFromEnvironment;
-    if ApiKey = '' then
-    begin
-      Result := 'Error: GEMINI_API_KEY environment variable not set. Please set your Gemini API key to use the changelog feature.';
-      Exit;
-    end;
-    
-    // Create provider and tool context
-    Provider := TGeminiProvider.Create(ApiKey);
+    // Load configuration
+    Config := TGitPalConfig.Create;
+    Registry := TProviderRegistry.Create;
     try
+      if not Config.LoadConfig then
+      begin
+        Result := 'Error: No configuration found. Please run "gitpal setup" first.';
+        Exit;
+      end;
+      
+      // Determine which provider to use
+      if ProviderOverride <> '' then
+        ProviderName := AnsiString(ProviderOverride)
+      else
+        ProviderName := Config.DefaultProvider;
+      
+      if ProviderName = '' then
+      begin
+        Result := 'Error: No provider specified and no default provider configured.';
+        Exit;
+      end;
+      
+      // Create provider from config
+      try
+        Provider := Registry.CreateProviderFromConfig(Config, ProviderName);
+      except
+        on E: Exception do
+        begin
+          Result := 'Error: ' + E.Message;
+          Exit;
+        end;
+      end;
+      
       // Check if provider supports tool calling
       if not Provider.SupportsToolCalling then
       begin
-        Result := 'Error: Gemini provider does not support tool calling';
+        Result := 'Error: Provider "' + string(ProviderName) + '" does not support tool calling.';
         Exit;
       end;
       
@@ -847,7 +876,7 @@ begin
       // Get available tools and execute conversation
       Tools := ToolContext.GetAvailableTools;
       
-      // Execute tool-calling conversation
+      // Execute tool-calling conversation using configured model
       Response := Provider.ChatCompletionWithTools(
         Provider.GetDefaultModel,
         Messages,
@@ -875,8 +904,8 @@ begin
       end;
       
     finally
-      if Assigned(Provider) then
-        FreeAndNil(Provider);
+      Config.Free;
+      Registry.Free;
     end;
     
   except
@@ -887,13 +916,13 @@ begin
   end;
 end;
 
-procedure RunChangelogCommand;
+procedure RunChangelogCommand(const ProviderOverride: string = '');
 var
   Prog: TBobaUIProgram;
   Model: TChangelogModel;
 begin
   // Create model that will show spinner and generate changelog async
-  Model := TChangelogModel.Create;
+  Model := TChangelogModel.Create(ProviderOverride);
   Model.StartGeneration;
   
   Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);

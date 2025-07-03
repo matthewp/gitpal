@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Important: Project Name Convention
+
+**ALWAYS use "gitpal" (all lowercase, single word) when referring to this project.** Never use "GitPal", "Gitpal", "git-pal", or any other variant. The correct usage is:
+- ✅ gitpal
+- ❌ GitPal
+- ❌ Gitpal  
+- ❌ git-pal
+
 ## Project Overview
 
 This is a CLI tool written in Pascal that reads git status and creates good commit messages using AI. The project uses two main vendored dependencies:
@@ -240,7 +248,7 @@ Both dependency update processes will:
 
 ## Release Process
 
-To create a new release of GitPal:
+To create a new release of gitpal:
 
 1. **Update version number** in `src/gitpal.pas`:
    ```pascal

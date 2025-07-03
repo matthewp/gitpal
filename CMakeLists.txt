@@ -51,7 +51,16 @@ set(GITPAL_SOURCES
     src/gitpal.pas
     src/command_commit.pas
     src/command_changelog.pas
+    src/command_setup.pas
     src/git.pas
+    src/gitpal_auth.pas
+    src/oauth_client.pas
+    src/oauth_server.pas
+    src/token_storage.pas
+    src/browser_launch.pas
+    src/config_manager.pas
+    src/provider_config.pas
+    src/logging.pas
     # Add other source dependencies here as needed
 )
 
