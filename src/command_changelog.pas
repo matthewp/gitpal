@@ -243,9 +243,6 @@ begin
     if FIsRunning and Assigned(FThread) then
     begin
       FThread.Terminate;
-      FThread.WaitFor;
-      Sleep(10); // Small delay to ensure thread cleanup is complete
-      FThread.Free;
       FThread := nil;
       FIsRunning := False;
     end;
@@ -315,7 +312,7 @@ begin
       begin
         ResultMsg.Free;
       end;
-    end;
+    end
   except
     on E: Exception do
     begin
@@ -442,6 +439,15 @@ begin
       end;
     end;
     Exit; // Don't process other messages this cycle
+  end;
+
+  // Handle Ctrl+C interrupt
+  if Msg is bobaui.TInterruptMsg then
+  begin
+    CancelCurrentOperation; // Cancel any running operation
+    SetError('Operation cancelled by user');
+    Result.Cmd := bobaui.InterruptCmd; // Exit with interrupt signal
+    Exit;
   end;
 
   if Msg is bobaui.TKeyMsg then
@@ -1013,6 +1019,12 @@ begin
   try
     Prog.Run;
   except
+    on E: bobaui.EBobaUIInterrupted do
+    begin
+      writeln('');
+      writeln('Operation cancelled by user.');
+      Halt(130); // Standard exit code for SIGINT
+    end;
     on E: Exception do
     begin
       raise;
