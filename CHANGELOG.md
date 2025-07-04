@@ -22,3 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Explicitly set ssh key location
 
 ## [0.0.8] - 2023-02-15
+
+## [0.0.7] - 2023-01-30
+### Added
+- Support for --stage flag to stage changes before commit
+- BSD 3-Clause License
+
+## [0.0.6] - 2023-01-15
+### Changed
+- Improved cursor hiding in the UI
+- Updated bobaui dependency to v0.1.15
+
+## [0.0.5] - 2022-12-30
+### Added
+- Cursor hiding in the UI
+- Updated bobaui dependency to v0.1.15
