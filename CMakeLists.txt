@@ -12,7 +12,7 @@ set(FPC_FLAGS
 # Define paths to vendored Free Pascal unit directories
 set(VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
 list(APPEND FPC_FLAGS
-    "-Fu${VENDOR_DIR}/bobaui/v0.1.16"  # Path for bobaui units
+    "-Fu${VENDOR_DIR}/bobaui/v0.0.17"  # Path for bobaui units
     "-Fu${VENDOR_DIR}/models.pas/v0.0.3"  # Path for models units  
     "-Fi${VENDOR_DIR}/models.pas/v0.0.3"  # Include path for models units
     "-Fu${CMAKE_CURRENT_SOURCE_DIR}/src"  # Source directory

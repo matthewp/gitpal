@@ -26,6 +26,12 @@ uses
 type
   TStringArray = array of string;
 
+  // BobaUI Exceptions
+  EBobaUIInterrupted = class(Exception)
+  public
+    constructor Create;
+  end;
+
 const
   STDIN_FILENO = 0;
   STDOUT_FILENO = 1;
@@ -91,6 +97,12 @@ type
 
   // Quit message
   TQuitMsg = class(TMsg)
+  public
+    constructor Create;
+  end;
+
+  // Interrupt message - sent when SIGINT (Ctrl+C) is received
+  TInterruptMsg = class(TMsg)
   public
     constructor Create;
   end;
@@ -165,6 +177,11 @@ type
 
   // Simple commands
   TQuitCommand = class(TCommand)
+  public
+    function Execute: TMsg; override;
+  end;
+
+  TInterruptCommand = class(TCommand)
   public
     function Execute: TMsg; override;
   end;
@@ -579,6 +596,7 @@ type
 
 // Common commands
 function QuitCmd: TCmd;
+function InterruptCmd: TCmd;
 function ShowCursorCmd: TCmd;
 function HideCursorCmd: TCmd;
 
@@ -617,6 +635,9 @@ procedure DebugLog(const Message: string);
 // Signal handler for SIGWINCH (terminal resize)
 procedure HandleSIGWINCH(sig: cint); cdecl;
 
+// Signal handler for SIGINT (external signals, not Ctrl+C in raw mode)
+procedure HandleSIGINT(sig: cint); cdecl;
+
 // Function to get current terminal size
 procedure GetCurrentTerminalSize(out Width, Height: integer);
 
@@ -629,6 +650,11 @@ var
   // Global list of active program instances for signal dispatching
   ActivePrograms: array of TBobaUIProgram;
   ActiveProgramsCS: TCriticalSection;
+  // Global flag for SIGINT handling
+  GotSIGINT: Boolean = False;
+  {$IFDEF UNIX}
+  OriginalSIGINTHandler: PSigActionRec;
+  {$ENDIF}
 
 implementation
 
@@ -1014,6 +1040,16 @@ begin
   inherited Create;
 end;
 
+constructor TInterruptMsg.Create;
+begin
+  inherited Create;
+end;
+
+constructor EBobaUIInterrupted.Create;
+begin
+  inherited Create('Program interrupted by SIGINT');
+end;
+
 constructor TWindowSizeMsg.Create(const AWidth, AHeight: integer);
 begin
   inherited Create;
@@ -1117,6 +1153,11 @@ end;
 function TQuitCommand.Execute: TMsg;
 begin
   Result := TQuitMsg.Create;
+end;
+
+function TInterruptCommand.Execute: TMsg;
+begin
+  Result := TInterruptMsg.Create;
 end;
 
 function TShowCursorCommand.Execute: TMsg;
@@ -2540,9 +2581,17 @@ begin
         Ch := FDisplay.ReadKey;
         if Assigned(FMessageQueue) then // Check again in case it was freed
         begin
-          // Use the input parser to handle escape sequences
-          KeyMsg := FInputParser.ParseInput(Ch);
-          FMessageQueue.Push(KeyMsg);
+          // Check for Ctrl+C (ASCII 3) and create InterruptMsg
+          if Ord(Ch) = 3 then
+          begin
+            FMessageQueue.Push(TInterruptMsg.Create);
+          end
+          else
+          begin
+            // Use the input parser to handle escape sequences
+            KeyMsg := FInputParser.ParseInput(Ch);
+            FMessageQueue.Push(KeyMsg);
+          end;
         end;
       end
       else
@@ -2708,6 +2757,7 @@ begin
   New(NewAction);
   New(FOriginalSigWinchHandler);
   
+  // Set up SIGWINCH handler
   NewAction^.sa_Handler := SigActionHandler(@HandleSIGWINCH);
   fillchar(NewAction^.Sa_Mask, sizeof(NewAction^.sa_mask), #0);
   NewAction^.Sa_Flags := 0;
@@ -2718,6 +2768,23 @@ begin
   if fpSigAction(SIGWINCH, NewAction, FOriginalSigWinchHandler) < 0 then
   begin
     WriteLn('Warning: Could not set SIGWINCH handler');
+  end;
+  
+  // Set up SIGINT handler (global, not per-program) for external signals
+  if not Assigned(OriginalSIGINTHandler) then
+  begin
+    New(OriginalSIGINTHandler);
+    NewAction^.sa_Handler := SigActionHandler(@HandleSIGINT);
+    fillchar(NewAction^.Sa_Mask, sizeof(NewAction^.sa_mask), #0);
+    NewAction^.Sa_Flags := 0;
+    {$ifdef Linux}
+    NewAction^.Sa_Restorer := nil;
+    {$endif}
+    
+    if fpSigAction(SIGINT, NewAction, OriginalSIGINTHandler) < 0 then
+    begin
+      WriteLn('Warning: Could not set SIGINT handler');
+    end;
   end;
   
   Dispose(NewAction);
@@ -2750,6 +2817,11 @@ end;
 function QuitCmd: TCmd;
 begin
   Result := TQuitCommand.Create;
+end;
+
+function InterruptCmd: TCmd;
+begin
+  Result := TInterruptCommand.Create;
 end;
 
 function ShowCursorCmd: TCmd;
@@ -2917,6 +2989,13 @@ begin
   end;
 end;
 
+procedure HandleSIGINT(sig: cint); cdecl;
+begin
+  // Signal handler for external SIGINT (e.g., kill -INT)
+  // This complements the Ctrl+C detection in raw mode
+  GotSIGINT := True;
+end;
+
 // Program registration functions for signal handling
 procedure RegisterProgram(AProgram: TBobaUIProgram);
 var
@@ -2998,6 +3077,13 @@ begin
 
   repeat
     try
+      // Check for SIGINT flag (external signals like kill -INT)
+      if GotSIGINT then
+      begin
+        GotSIGINT := False; // Reset flag
+        FMessageQueue.Push(TInterruptMsg.Create);
+      end;
+      
       // Check for messages in the queue
       Msg := nil;
       if Assigned(FMessageQueue) then
@@ -3005,6 +3091,14 @@ begin
       
       if Assigned(Msg) then
       begin
+        // Handle InterruptMsg directly
+        if Msg is TInterruptMsg then
+        begin
+          Quit;
+          Msg.Free;
+          raise EBobaUIInterrupted.Create;
+        end;
+        
         OldModel := FModel;
         
         // First try to handle overlay messages
@@ -3035,6 +3129,12 @@ begin
             begin
               Quit;
               CmdMsg.Free;
+            end
+            else if CmdMsg is TInterruptMsg then
+            begin
+              Quit;
+              CmdMsg.Free;
+              raise EBobaUIInterrupted.Create;
             end
             else if CmdMsg is TShowCursorMsg then
             begin
@@ -3070,6 +3170,12 @@ begin
                     begin
                       Quit;
                       BatchCmdMsg.Free;
+                    end
+                    else if BatchCmdMsg is TInterruptMsg then
+                    begin
+                      Quit;
+                      BatchCmdMsg.Free;
+                      raise EBobaUIInterrupted.Create;
                     end
                     else if BatchCmdMsg is TShowCursorMsg then
                     begin
@@ -3140,9 +3246,22 @@ begin
   until not FRunning;
 end;
 
-{$IFDEF BOBAUI_DEBUG}
 finalization
+  // Restore SIGINT handler
+  {$IFDEF UNIX}
+  if Assigned(OriginalSIGINTHandler) then
+  begin
+    fpSigAction(SIGINT, OriginalSIGINTHandler, nil);
+    Dispose(OriginalSIGINTHandler);
+  end;
+  {$ENDIF}
+  
+  // Clean up critical section
+  if Assigned(ActiveProgramsCS) then
+    ActiveProgramsCS.Free;
+    
+  {$IFDEF BOBAUI_DEBUG}
   CloseBDebugLog;
-{$ENDIF}
+  {$ENDIF}
 
 end. 

@@ -333,14 +333,97 @@ Messages are the lifeblood of a BobaUI application. They are triggered by user i
 BobaUI provides built-in message types:
 *   `TKeyMsg`: Represents a key press. You can check `KeyMsg.Key` for simple characters or properties like `IsArrowKey`, `IsUpArrow`, etc.
 *   `TWindowSizeMsg`: Sent when the terminal is resized. It contains the new `Width` and `Height`.
+*   `TInterruptMsg`: Sent when the user presses Ctrl+C or when the process receives SIGINT. This allows your application to handle interrupts gracefully.
 
 You can also define your own custom message types by creating new classes, though this is an advanced use case.
+
+### Interrupt Handling (Ctrl+C)
+
+BobaUI automatically handles interrupt requests from two sources and converts them into `TInterruptMsg` that flows through your application's normal update cycle:
+
+1. **Ctrl+C keyboard input**: In raw terminal mode (necessary for TUI input), Ctrl+C is detected as keyboard input (ASCII 3)
+2. **SIGINT signals**: External signals sent by `kill -INT <pid>`, parent processes, or system utilities
+
+This dual approach ensures your application responds to interrupts whether they come from direct user input or external process management.
+
+By default, if your application doesn't handle `TInterruptMsg`, the program will quit and raise an `EBobaUIInterrupted` exception, which you can catch to perform cleanup or return a specific exit code:
+
+```pascal
+program MyApp;
+
+uses bobaui;
+
+var
+  Model: TMyModel;
+  Program: TBobaUIProgram;
+begin
+  Model := TMyModel.Create;
+  Program := TBobaUIProgram.Create(Model);
+  
+  try
+    Program.Run;
+    WriteLn('Program exited normally');
+  except
+    on E: EBobaUIInterrupted do
+    begin
+      WriteLn('Program interrupted by user (Ctrl+C)');
+      ExitCode := 130; // Standard Unix exit code for SIGINT
+    end;
+  end;
+  
+  Program.Free;
+end.
+```
+
+If you want to handle interrupts in your `Update` function (for example, to show a confirmation dialog or perform cleanup), you can check for `TInterruptMsg`:
+
+```pascal
+function TMyModel.Update(const Msg: TMsg): TUpdateResult;
+begin
+  Result.Model := Self;
+  Result.Cmd := nil;
+  
+  if Msg is TInterruptMsg then
+  begin
+    // Handle interrupt gracefully - perhaps show a confirmation dialog
+    // or save work before quitting
+    if SomeCondition then
+      Result.Cmd := QuitCmd  // Quit normally
+    else
+      Result.Cmd := InterruptCmd; // Quit with interrupt (raises EBobaUIInterrupted)
+  end
+  else if Msg is TKeyMsg then
+  begin
+    // Handle other keys...
+  end;
+end;
+```
+
+This design allows applications to:
+- **Handle interrupts gracefully** by responding to `TInterruptMsg` in the `Update` function
+- **Distinguish between normal quit and interrupt** for proper exit codes and cleanup
+- **Follow the same message-driven architecture** for all events, including keyboard input
+
+The interrupt handling works on all platforms where BobaUI operates (Unix-like systems). On systems where Ctrl+C behavior differs, the same pattern can be extended to handle platform-specific interrupt sequences.
+
+**Testing both interrupt methods:**
+```bash
+# Method 1: Run your program and press Ctrl+C
+./your_program
+
+# Method 2: Send SIGINT from another terminal
+kill -INT $(pgrep your_program)
+```
+
+Both methods will trigger the same `TInterruptMsg` and `EBobaUIInterrupted` behavior.
 
 ## Commands
 
 Commands (`TCmd`) are for performing actions that have side effects, like quitting the application or making an HTTP request. Your `Update` function can return a command along with the new model.
 
-The most common command is `bobaui.QuitCmd`, which tells the runtime to exit.
+Common built-in commands include:
+- `bobaui.QuitCmd` - Exit the program normally
+- `bobaui.InterruptCmd` - Exit the program as if interrupted by SIGINT (raises `EBobaUIInterrupted`)
 
 ### Command Batching
 
