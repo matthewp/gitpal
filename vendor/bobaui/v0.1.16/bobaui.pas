@@ -2177,7 +2177,12 @@ begin
       // The original logic only cleared when new line was shorter, but ANSI codes make 
       // byte length comparison unreliable for determining visual width changes
       if (I < Length(FLastRender)) then
-        FAnsiRenderer.ClearToEndOfLine;
+      begin
+        // Only clear if line doesn't already fill the terminal width
+        // This prevents terminal bugs where [K incorrectly erases the last character
+        if bobastyle.Utf8DisplayWidth(Line) < FRenderingStrategy.FDisplay.GetWidth then
+          FAnsiRenderer.ClearToEndOfLine;
+      end;
     end;
   end;
 end;
