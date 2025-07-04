@@ -99,10 +99,12 @@ type
   private
     FRepoPath: string;
     FProviderOverride: string;
+    FFromTag: string;
+    FToTag: string;
   protected
     function ExecuteOperation: bobaui.TMsg; override;
   public
-    constructor Create(const AOperationId: string; const ARepoPath: string = '.'; const AProviderOverride: string = '');
+    constructor Create(const AOperationId: string; const ARepoPath: string = '.'; const AProviderOverride: string = ''; const AFromTag: string = ''; const AToTag: string = '');
   end;
 
 // Changelog UI Model
@@ -115,6 +117,8 @@ type
     FSuccessMessage: string;
     FIsGenerating: Boolean;
     FProviderOverride: string;
+    FFromTag: string;
+    FToTag: string;
     // Async operation fields
     FAsyncState: TAsyncOperationState;
     FCurrentOperation: TAsyncOperation;
@@ -126,7 +130,7 @@ type
     procedure CancelCurrentOperation;
     function GenerateOperationId: string;
   public
-    constructor Create(const ProviderOverride: string = '');
+    constructor Create(const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = '');
     destructor Destroy; override;
     function Update(const Msg: bobaui.TMsg): bobaui.TUpdateResult; override;
     function View: string; override;
@@ -142,6 +146,8 @@ type
   TGitPalToolContext = class(TBaseToolContext)
   private
     FRepoPath: string;
+    FFromTag: string;
+    FToTag: string;
     function ValidateFilePath(const Path: string): Boolean;
     
     // Tool implementations
@@ -150,14 +156,14 @@ type
     function ReadChangelogFile(const FilePath: string): string;
     function WriteChangelogFile(const Content, FilePath: string): Boolean;
   public
-    constructor Create(const ARepoPath: string = '.');
+    constructor Create(const ARepoPath: string = '.'; const AFromTag: string = ''; const AToTag: string = '');
     destructor Destroy; override;
     function ExecuteTool(const ToolCall: TToolCall): TToolResult; override;
     function GetAvailableTools: TToolFunctionArray; override;
   end;
 
 // Public functions for changelog command
-procedure RunChangelogCommand(const ProviderOverride: string = '');
+procedure RunChangelogCommand(const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = '');
 
 implementation
 
@@ -166,7 +172,7 @@ var
   GProgram: TBobaUIProgram = nil;
 
 // Forward declaration for the original generation function
-function GenerateChangelogAsync(const RepoPath: string; const ProviderOverride: string = ''): string; forward;
+function GenerateChangelogAsync(const RepoPath: string; const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = ''): string; forward;
 
 { TAsyncResultMsg }
 
@@ -330,11 +336,13 @@ end;
 
 { TAsyncChangelogGeneration }
 
-constructor TAsyncChangelogGeneration.Create(const AOperationId: string; const ARepoPath: string; const AProviderOverride: string);
+constructor TAsyncChangelogGeneration.Create(const AOperationId: string; const ARepoPath: string; const AProviderOverride: string; const AFromTag: string; const AToTag: string);
 begin
   inherited Create(AOperationId);
   FRepoPath := ARepoPath;
   FProviderOverride := AProviderOverride;
+  FFromTag := AFromTag;
+  FToTag := AToTag;
 end;
 
 function TAsyncChangelogGeneration.ExecuteOperation: bobaui.TMsg;
@@ -342,7 +350,7 @@ var
   GenerationResult: string;
 begin
   try
-    GenerationResult := GenerateChangelogAsync(FRepoPath, FProviderOverride);
+    GenerationResult := GenerateChangelogAsync(FRepoPath, FProviderOverride, FFromTag, FToTag);
     Result := TAsyncChangelogCompletedMsg.Create(FOperationId, GenerationResult);
   except
     on E: Exception do
@@ -354,7 +362,7 @@ end;
 
 { TChangelogModel }
 
-constructor TChangelogModel.Create(const ProviderOverride: string);
+constructor TChangelogModel.Create(const ProviderOverride: string; const FromTag: string; const ToTag: string);
 begin
   inherited Create;
   FSpinner := TSpinner.Create(stDot);
@@ -363,6 +371,8 @@ begin
   FSuccessMessage := '';
   FIsGenerating := False;
   FProviderOverride := ProviderOverride;
+  FFromTag := FromTag;
+  FToTag := ToTag;
   // Initialize async fields
   FAsyncState := osIdle;
   FCurrentOperation := nil;
@@ -535,7 +545,7 @@ begin
     FAsyncState := osGenerating;
     
     // Create and start the async operation
-    FCurrentOperation := TAsyncChangelogGeneration.Create(FOperationId, '.', FProviderOverride);
+    FCurrentOperation := TAsyncChangelogGeneration.Create(FOperationId, '.', FProviderOverride, FFromTag, FToTag);
     FCurrentOperation.Start;
   end;
 end;
@@ -552,10 +562,12 @@ begin
 end;
 
 
-constructor TGitPalToolContext.Create(const ARepoPath: string);
+constructor TGitPalToolContext.Create(const ARepoPath: string; const AFromTag: string; const AToTag: string);
 begin
   inherited Create;
   FRepoPath := ExpandFileName(ARepoPath);
+  FFromTag := AFromTag;
+  FToTag := AToTag;
   
   // Validate repository using git.pas
   if not git.TGitRepository.IsRepository(FRepoPath) then
@@ -591,12 +603,79 @@ end;
 function TGitPalToolContext.GetGitTags: string;
 var
   GitResult: git.TGitResult;
+  Tags: TStringList;
+  FilteredTags: TStringList;
+  i: Integer;
+  InRange: Boolean;
 begin
   GitResult := git.TGitRepository.GetTags('--sort=-version:refname');
-  if GitResult.Success then
-    Result := GitResult.Output
-  else
+  if not GitResult.Success then
+  begin
     Result := 'Error getting git tags: ' + GitResult.ErrorMessage;
+    Exit;
+  end;
+  
+  Tags := TStringList.Create;
+  FilteredTags := TStringList.Create;
+  try
+    Tags.Text := GitResult.Output;
+    
+    // If both from and to are specified, filter to that range
+    if (FFromTag <> '') and (FToTag <> '') then
+    begin
+      InRange := False;
+      for i := 0 to Tags.Count - 1 do
+      begin
+        if Tags[i] = FToTag then
+          InRange := True;
+        
+        if InRange then
+          FilteredTags.Add(Tags[i]);
+          
+        if Tags[i] = FFromTag then
+          Break;
+      end;
+    end
+    // If only from is specified, take everything from that tag onwards
+    else if FFromTag <> '' then
+    begin
+      for i := 0 to Tags.Count - 1 do
+      begin
+        FilteredTags.Add(Tags[i]);
+        if Tags[i] = FFromTag then
+          Break;
+      end;
+    end
+    // If only to is specified, take everything up to that tag
+    else if FToTag <> '' then
+    begin
+      for i := 0 to Tags.Count - 1 do
+      begin
+        if Tags[i] = FToTag then
+        begin
+          FilteredTags.Add(Tags[i]);
+          Break;
+        end;
+        FilteredTags.Add(Tags[i]);
+      end;
+    end
+    // If no range specified, default to 5 most recent tags
+    else
+    begin
+      for i := 0 to Tags.Count - 1 do
+      begin
+        if i < 5 then
+          FilteredTags.Add(Tags[i])
+        else
+          Break;
+      end;
+    end;
+    
+    Result := FilteredTags.Text;
+  finally
+    Tags.Free;
+    FilteredTags.Free;
+  end;
 end;
 
 function TGitPalToolContext.GetCommitsBetween(const FromRef, ToRef: string): string;
@@ -782,7 +861,7 @@ begin
 end;
 
 // Thread-safe procedure for changelog generation
-function GenerateChangelogAsync(const RepoPath: string; const ProviderOverride: string = ''): string;
+function GenerateChangelogAsync(const RepoPath: string; const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = ''): string;
 var
   Config: TGitPalConfig;
   Registry: TProviderRegistry;
@@ -838,7 +917,7 @@ begin
       
       // Create tool context (validates git repository)
       try
-        ToolContext := TGitPalToolContext.Create(RepoPath);
+        ToolContext := TGitPalToolContext.Create(RepoPath, FromTag, ToTag);
       except
         on E: Exception do
         begin
@@ -868,6 +947,7 @@ begin
                              AnsiString('- read_changelog: Read existing CHANGELOG.md') + #10 +
                              AnsiString('- write_changelog: Write updated CHANGELOG.md') + #10 + #10 +
                              AnsiString('Please start by calling the get_git_tags function to see what versions exist. ') +
+                             AnsiString('Note: The tags returned may be limited to a specific range or the most recent versions. ') +
                              AnsiString('After that, call read_changelog to see the current content. ') + 
                              AnsiString('Then analyze what''s needed and use the other tools as necessary. ') + #10 + #10 +
                              AnsiString('IMPORTANT: Please call only ONE function at a time and wait for the result before calling the next function. ') +
@@ -916,13 +996,13 @@ begin
   end;
 end;
 
-procedure RunChangelogCommand(const ProviderOverride: string = '');
+procedure RunChangelogCommand(const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = '');
 var
   Prog: TBobaUIProgram;
   Model: TChangelogModel;
 begin
   // Create model that will show spinner and generate changelog async
-  Model := TChangelogModel.Create(ProviderOverride);
+  Model := TChangelogModel.Create(ProviderOverride, FromTag, ToTag);
   Model.StartGeneration;
   
   Prog := TBobaUIProgram.Create(Model, bobaui.dmInline);

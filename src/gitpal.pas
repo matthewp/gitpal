@@ -108,8 +108,12 @@ begin
   writeln('  a summary of changes organized by type (features, fixes, etc.).');
   writeln('');
   writeln('Options:');
+  writeln('  --from <tag>         Start from this tag/version (e.g., v1.0.0)');
+  writeln('  --to <tag>           End at this tag/version (e.g., v2.0.0)');
   writeln('  --provider <name>    Override default provider (openai, claude, gemini)');
   writeln('  --help, -h           Show this help message');
+  writeln('');
+  writeln('Note: By default, processes up to 5 most recent missing versions.');
 end;
 
 var
@@ -117,6 +121,8 @@ var
   CustomPrompt: string;
   StageChanges: Boolean;
   ProviderOverride: string;
+  FromTag: string;
+  ToTag: string;
   i: integer;
   ShowMainHelp: boolean;
 begin
@@ -124,6 +130,8 @@ begin
   CustomPrompt := '';
   StageChanges := False;
   ProviderOverride := '';
+  FromTag := '';
+  ToTag := '';
   ShowMainHelp := False;
   
   // Parse command line arguments
@@ -194,6 +202,34 @@ begin
           Halt(1);
         end;
       end
+      else if ParamStr(i) = '--from' then
+      begin
+        // Get the next parameter as the from tag value
+        if i < ParamCount then
+        begin
+          Inc(i);
+          FromTag := AnsiString(ParamStr(i));
+        end
+        else
+        begin
+          writeln('Error: --from flag requires a value');
+          Halt(1);
+        end;
+      end
+      else if ParamStr(i) = '--to' then
+      begin
+        // Get the next parameter as the to tag value
+        if i < ParamCount then
+        begin
+          Inc(i);
+          ToTag := AnsiString(ParamStr(i));
+        end
+        else
+        begin
+          writeln('Error: --to flag requires a value');
+          Halt(1);
+        end;
+      end
       else if (Command = AnsiString('')) and (ParamStr(i)[1] <> '-') then
         Command := AnsiString(ParamStr(i))
       else if (Command = AnsiString('commit')) and (ParamStr(i)[1] <> '-') then
@@ -225,7 +261,7 @@ begin
   else if Command = AnsiString('changelog') then
   begin
     if EnsureConfigurationExists then
-      RunChangelogCommand(ProviderOverride);
+      RunChangelogCommand(ProviderOverride, FromTag, ToTag);
   end
   else
   begin
