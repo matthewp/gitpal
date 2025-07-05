@@ -21,7 +21,7 @@ procedure DisplayURLFallback(const URL: AnsiString);
 implementation
 
 {$IFDEF LINUX}
-function TryLinuxFallbackBrowsers(const URL: AnsiString; var Result: TBrowserLaunchResult): Boolean; forward;
+function TryLinuxFallbackBrowsers(const URL: AnsiString; var LaunchResult: TBrowserLaunchResult): Boolean; forward;
 {$ENDIF}
 
 function LaunchBrowser(const URL: AnsiString): TBrowserLaunchResult;
@@ -104,13 +104,13 @@ begin
 end;
 
 {$IFDEF LINUX}
-function TryLinuxFallbackBrowsers(const URL: AnsiString; var Result: TBrowserLaunchResult): Boolean;
+function TryLinuxFallbackBrowsers(const URL: AnsiString; var LaunchResult: TBrowserLaunchResult): Boolean;
 var
   Browsers: array[0..4] of AnsiString;
   Process: TProcess;
   I: Integer;
 begin
-  Result.Success := False;
+  LaunchResult.Success := False;
   
   // Common Linux browsers to try
   Browsers[0] := 'firefox';
@@ -133,9 +133,10 @@ begin
         
         if Process.ExitStatus = 0 then
         begin
-          Result.Success := True;
-          Result.ErrorMessage := AnsiString('');
-          Exit(True);
+          LaunchResult.Success := True;
+          LaunchResult.ErrorMessage := AnsiString('');
+          Result := True;
+          Exit;
         end;
       except
         // Continue to next browser
@@ -146,8 +147,8 @@ begin
     end;
   end;
   
-  Result.ErrorMessage := AnsiString('No working browser found. Tried: xdg-open, firefox, google-chrome, chromium, chromium-browser, sensible-browser');
-  Exit(False);
+  LaunchResult.ErrorMessage := AnsiString('No working browser found. Tried: xdg-open, firefox, google-chrome, chromium, chromium-browser, sensible-browser');
+  Result := False;
 end;
 {$ENDIF}
 
