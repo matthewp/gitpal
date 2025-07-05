@@ -107,6 +107,22 @@ type
                      const AErrorMessage: string = '');
   end;
 
+  // Command for editing commit message
+  TEditCommitMessageCommand = class(bobaui.TCommand)
+  private
+    FCurrentMessage: string;
+  public
+    constructor Create(const ACurrentMessage: string);
+    function Execute: bobaui.TMsg; override;
+  end;
+
+  // Message for returning edited content
+  TCommitMessageEditedMsg = class(bobaui.TMsg)
+  public
+    EditedMessage: string;
+    constructor Create(const AEditedMessage: string);
+  end;
+
   // Streaming chunk message for real-time updates
   TAsyncStreamingChunkMsg = class(TAsyncResultMsg)
   private
@@ -191,6 +207,7 @@ var
 function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''; const ProviderOverride: string = ''): string; forward;
 procedure GenerateCommitMessageStream(const DiffContent: string; const CustomPrompt: string; ACallback: models.TLLMStreamCallback; const ProviderOverride: string = ''); forward;
 function GenerateCommitMessageCmd(const DiffContent: string; const CustomPrompt: string; const ProviderOverride: string = ''): bobaui.TCmd; forward;
+function GetEditorCommand: string; forward;
 
 constructor TCommitGeneratedMsg.Create(const ACommitMessage: string);
 begin
@@ -234,6 +251,103 @@ begin
   inherited Create(AOperationId, True, ''); // Streaming chunks are always "successful"
   FChunk := AChunk;
   FIsComplete := AIsComplete;
+end;
+
+// TEditCommitMessageCommand implementations
+constructor TEditCommitMessageCommand.Create(const ACurrentMessage: string);
+begin
+  inherited Create;
+  FCurrentMessage := ACurrentMessage;
+end;
+
+function TEditCommitMessageCommand.Execute: bobaui.TMsg;
+var
+  TempFile: string;
+  EditorCmd: string;
+  Process: TProcess;
+  EditedContent: string;
+  F: TextFile;
+  Line: string;
+begin
+  try
+    // Create temporary file with .gitcommit extension
+    TempFile := GetTempDir + 'gitpal_commit_' + IntToStr(GetTickCount64) + '.gitcommit';
+    
+    // Write current message to temp file
+    AssignFile(F, TempFile);
+    Rewrite(F);
+    Write(F, FCurrentMessage);
+    CloseFile(F);
+    
+    // Get editor command
+    EditorCmd := GetEditorCommand;
+    if EditorCmd = '' then
+    begin
+      Result := TCommitMessageEditedMsg.Create(FCurrentMessage);
+      DeleteFile(TempFile);
+      Exit;
+    end;
+    
+    // Launch editor
+    Process := TProcess.Create(nil);
+    try
+      Process.Executable := EditorCmd;
+      Process.Parameters.Add(TempFile);
+      Process.Options := [poWaitOnExit];
+      Process.Execute;
+      
+      // Check if editor succeeded
+      if Process.ExitStatus <> 0 then
+      begin
+        Result := TCommitMessageEditedMsg.Create(FCurrentMessage);
+        DeleteFile(TempFile);
+        Exit;
+      end;
+      
+      // Read edited content
+      if FileExists(TempFile) then
+      begin
+        AssignFile(F, TempFile);
+        Reset(F);
+        EditedContent := AnsiString('');
+        while not EOF(F) do
+        begin
+          ReadLn(F, Line);
+          if EditedContent <> '' then 
+            EditedContent := EditedContent + #10;
+          EditedContent := EditedContent + Line;
+        end;
+        CloseFile(F);
+        
+        // Trim any trailing whitespace
+        EditedContent := AnsiString(TrimRight(string(EditedContent)));
+        
+        Result := TCommitMessageEditedMsg.Create(EditedContent);
+      end
+      else
+      begin
+        Result := TCommitMessageEditedMsg.Create(FCurrentMessage);
+      end;
+    finally
+      Process.Free;
+      DeleteFile(TempFile);
+    end;
+  except
+    on E: Exception do
+    begin
+      // On any error, return original message
+      Result := TCommitMessageEditedMsg.Create(FCurrentMessage);
+      if FileExists(TempFile) then
+        DeleteFile(TempFile);
+    end;
+  end;
+end;
+
+// TCommitMessageEditedMsg implementations
+constructor TCommitMessageEditedMsg.Create(const AEditedMessage: string);
+begin
+  inherited Create;
+  EditedMessage := AEditedMessage;
 end;
 
 // TAsyncOperation implementations
@@ -678,7 +792,11 @@ begin
   Sections[1] := AnsiString(''); // Empty line above box
   Sections[2] := BorderedMessage;
   Sections[3] := AnsiString(''); // Empty line below box
-  Sections[4] := AnsiString('Accept this commit message?') + #10 + #10 + FList.View;
+  if GetEditorCommand <> '' then
+    Sections[4] := AnsiString('Accept this commit message?') + #10 + 
+                   AnsiString('(press e to edit)') + #10 + #10 + FList.View
+  else
+    Sections[4] := AnsiString('Accept this commit message?') + #10 + #10 + FList.View;
   
   // If commit has been executed, extend the array to append the result
   if FCommitExecuted then
@@ -737,6 +855,7 @@ var
   CommitGeneratedMsg: TCommitGeneratedMsg;
   AsyncCommitMsg: TAsyncCommitGeneratedMsg;
   StreamChunkMsg: TAsyncStreamingChunkMsg;
+  EditedMsg: TCommitMessageEditedMsg;
   NewModel: TCommitModel;
   NewList: bobacomponents.TList;
   NewSpinner: bobacomponents.TSpinner;
@@ -806,6 +925,14 @@ begin
     begin
       CancelCurrentOperation; // Cancel any running operation
       Result.Cmd := bobaui.QuitCmd;
+    end
+    // Handle 'e' to edit
+    else if ((KeyMsg.Key = 'e') or (KeyMsg.Key = 'E')) and (not FCommitExecuted) and (FAsyncState = osIdle) then
+    begin
+      if GetEditorCommand <> '' then
+      begin
+        Result.Cmd := TEditCommitMessageCommand.Create(FCommitMessage);
+      end;
     end
     // If commit was executed, any key should quit
     else if FCommitExecuted then
@@ -877,6 +1004,15 @@ begin
       end;
     end;
   end
+  else if Msg is TCommitMessageEditedMsg then
+  begin
+    // Handle edited commit message
+    EditedMsg := TCommitMessageEditedMsg(Msg);
+    NewModel := TCommitModel.Create(EditedMsg.EditedMessage);
+    NewModel.FTerminalWidth := FTerminalWidth;
+    NewModel.FTerminalHeight := FTerminalHeight;
+    Result.Model := NewModel;
+  end
   else if Msg is TCommitGeneratedMsg then
   begin
     // Legacy message handling - shouldn't happen with new async system
@@ -917,8 +1053,23 @@ end;
 
 
 
-
-
+function GetEditorCommand: string;
+begin
+  Result := AnsiString(GetEnvironmentVariable('EDITOR'));
+  if Result = '' then
+    Result := AnsiString(GetEnvironmentVariable('VISUAL'));
+  if Result = '' then
+  begin
+    // Try common editors in order of preference
+    if FileExists('/usr/bin/nano') then Result := AnsiString('nano')
+    else if FileExists('/usr/bin/vim') then Result := AnsiString('vim')
+    else if FileExists('/usr/bin/vi') then Result := AnsiString('vi')
+    else if FileExists('/bin/nano') then Result := AnsiString('nano')
+    else if FileExists('/bin/vim') then Result := AnsiString('vim')
+    else if FileExists('/bin/vi') then Result := AnsiString('vi')
+    else Result := AnsiString(''); // No editor found
+  end;
+end;
 
 function GenerateCommitMessage(const DiffContent: string; const CustomPrompt: string = ''; const ProviderOverride: string = ''): string;
 var
