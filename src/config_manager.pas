@@ -10,10 +10,19 @@ uses
   SysUtils, Classes, fpjson, jsonparser, BaseUnix;
 
 type
+  TAuthMethod = (amApiKey, amOAuth);
+  
   TProviderConfig = record
     Enabled: Boolean;
     ApiKey: AnsiString;
     Model: AnsiString;
+    AuthMethod: TAuthMethod;
+    // OAuth tokens (only used when AuthMethod = amOAuth)
+    OAuthAccessToken: AnsiString;
+    OAuthRefreshToken: AnsiString;
+    OAuthTokenType: AnsiString;
+    OAuthExpiresAt: Int64; // Unix timestamp
+    OAuthScope: AnsiString;
   end;
   
   
@@ -146,14 +155,17 @@ begin
   FOpenAIConfig.Enabled := True;
   FOpenAIConfig.ApiKey := AnsiString('');
   FOpenAIConfig.Model := AnsiString('gpt-4o');
+  FOpenAIConfig.AuthMethod := amApiKey;
   
   FClaudeConfig.Enabled := True;
   FClaudeConfig.ApiKey := AnsiString('');
   FClaudeConfig.Model := AnsiString('claude-3-5-sonnet-latest');
+  FClaudeConfig.AuthMethod := amApiKey;
   
   FGeminiConfig.Enabled := True;
   FGeminiConfig.ApiKey := AnsiString('');
   FGeminiConfig.Model := AnsiString('gemini-2.0-flash-exp');
+  FGeminiConfig.AuthMethod := amApiKey;
   
 end;
 
@@ -184,6 +196,10 @@ begin
         FOpenAIConfig.Enabled := ProviderObj.Get('enabled', True);
         FOpenAIConfig.ApiKey := ProviderObj.Get('apiKey', '');
         FOpenAIConfig.Model := ProviderObj.Get('model', 'gpt-4o');
+        if ProviderObj.Get('authMethod', 'api_key') = 'oauth' then
+          FOpenAIConfig.AuthMethod := amOAuth
+        else
+          FOpenAIConfig.AuthMethod := amApiKey;
       end;
       
       // Claude
@@ -193,6 +209,17 @@ begin
         FClaudeConfig.Enabled := ProviderObj.Get('enabled', True);
         FClaudeConfig.ApiKey := ProviderObj.Get('apiKey', '');
         FClaudeConfig.Model := ProviderObj.Get('model', 'claude-3-5-sonnet-latest');
+        if ProviderObj.Get('authMethod', 'api_key') = 'oauth' then
+          FClaudeConfig.AuthMethod := amOAuth
+        else
+          FClaudeConfig.AuthMethod := amApiKey;
+        
+        // Load OAuth tokens if present
+        FClaudeConfig.OAuthAccessToken := ProviderObj.Get('oauthAccessToken', '');
+        FClaudeConfig.OAuthRefreshToken := ProviderObj.Get('oauthRefreshToken', '');
+        FClaudeConfig.OAuthTokenType := ProviderObj.Get('oauthTokenType', '');
+        FClaudeConfig.OAuthExpiresAt := ProviderObj.Get('oauthExpiresAt', Int64(0));
+        FClaudeConfig.OAuthScope := ProviderObj.Get('oauthScope', '');
       end;
       
       // Gemini
@@ -202,6 +229,10 @@ begin
         FGeminiConfig.Enabled := ProviderObj.Get('enabled', True);
         FGeminiConfig.ApiKey := ProviderObj.Get('apiKey', '');
         FGeminiConfig.Model := ProviderObj.Get('model', 'gemini-2.0-flash-exp');
+        if ProviderObj.Get('authMethod', 'api_key') = 'oauth' then
+          FGeminiConfig.AuthMethod := amOAuth
+        else
+          FGeminiConfig.AuthMethod := amApiKey;
       end;
     end;
     
@@ -227,32 +258,69 @@ begin
   ProvidersObj := TJSONObject.Create;
   
   // OpenAI
-  if FOpenAIConfig.Enabled and (FOpenAIConfig.ApiKey <> '') then
+  if FOpenAIConfig.Enabled and ((FOpenAIConfig.ApiKey <> '') or (FOpenAIConfig.AuthMethod = amOAuth)) then
   begin
     OpenAIObj := TJSONObject.Create;
     OpenAIObj.Add('enabled', FOpenAIConfig.Enabled);
-    OpenAIObj.Add('apiKey', string(FOpenAIConfig.ApiKey));
+    
+    // Only add API key if not using OAuth
+    if FOpenAIConfig.AuthMethod <> amOAuth then
+      OpenAIObj.Add('apiKey', string(FOpenAIConfig.ApiKey));
+    
     OpenAIObj.Add('model', string(FOpenAIConfig.Model));
+    if FOpenAIConfig.AuthMethod = amOAuth then
+      OpenAIObj.Add('authMethod', 'oauth')
+    else
+      OpenAIObj.Add('authMethod', 'api_key');
     ProvidersObj.Add('openai', OpenAIObj);
   end;
   
   // Claude
-  if FClaudeConfig.Enabled and (FClaudeConfig.ApiKey <> '') then
+  if FClaudeConfig.Enabled and ((FClaudeConfig.ApiKey <> '') or (FClaudeConfig.AuthMethod = amOAuth)) then
   begin
     ClaudeObj := TJSONObject.Create;
     ClaudeObj.Add('enabled', FClaudeConfig.Enabled);
-    ClaudeObj.Add('apiKey', string(FClaudeConfig.ApiKey));
+    
+    // Only add API key if not using OAuth
+    if FClaudeConfig.AuthMethod <> amOAuth then
+      ClaudeObj.Add('apiKey', string(FClaudeConfig.ApiKey));
+    
     ClaudeObj.Add('model', string(FClaudeConfig.Model));
+    if FClaudeConfig.AuthMethod = amOAuth then
+      ClaudeObj.Add('authMethod', 'oauth')
+    else
+      ClaudeObj.Add('authMethod', 'api_key');
+    
+    // Save OAuth tokens if present
+    if FClaudeConfig.OAuthAccessToken <> '' then
+      ClaudeObj.Add('oauthAccessToken', string(FClaudeConfig.OAuthAccessToken));
+    if FClaudeConfig.OAuthRefreshToken <> '' then
+      ClaudeObj.Add('oauthRefreshToken', string(FClaudeConfig.OAuthRefreshToken));
+    if FClaudeConfig.OAuthTokenType <> '' then
+      ClaudeObj.Add('oauthTokenType', string(FClaudeConfig.OAuthTokenType));
+    if FClaudeConfig.OAuthExpiresAt <> 0 then
+      ClaudeObj.Add('oauthExpiresAt', FClaudeConfig.OAuthExpiresAt);
+    if FClaudeConfig.OAuthScope <> '' then
+      ClaudeObj.Add('oauthScope', string(FClaudeConfig.OAuthScope));
+    
     ProvidersObj.Add('claude', ClaudeObj);
   end;
   
   // Gemini
-  if FGeminiConfig.Enabled and (FGeminiConfig.ApiKey <> '') then
+  if FGeminiConfig.Enabled and ((FGeminiConfig.ApiKey <> '') or (FGeminiConfig.AuthMethod = amOAuth)) then
   begin
     GeminiObj := TJSONObject.Create;
     GeminiObj.Add('enabled', FGeminiConfig.Enabled);
-    GeminiObj.Add('apiKey', string(FGeminiConfig.ApiKey));
+    
+    // Only add API key if not using OAuth
+    if FGeminiConfig.AuthMethod <> amOAuth then
+      GeminiObj.Add('apiKey', string(FGeminiConfig.ApiKey));
+    
     GeminiObj.Add('model', string(FGeminiConfig.Model));
+    if FGeminiConfig.AuthMethod = amOAuth then
+      GeminiObj.Add('authMethod', 'oauth')
+    else
+      GeminiObj.Add('authMethod', 'api_key');
     ProvidersObj.Add('gemini', GeminiObj);
   end;
   
@@ -401,7 +469,10 @@ var
   Config: TProviderConfig;
 begin
   Config := GetProviderConfig(ProviderName);
-  Result := Config.Enabled and (Config.ApiKey <> '');
+  // Check for API key OR OAuth tokens
+  Result := Config.Enabled and 
+    ((Config.ApiKey <> '') or 
+     ((Config.AuthMethod = amOAuth) and (Config.OAuthAccessToken <> '')));
 end;
 
 function TGitPalConfig.GetProviderApiKey(const ProviderName: AnsiString): AnsiString;

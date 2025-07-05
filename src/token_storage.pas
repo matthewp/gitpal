@@ -13,15 +13,23 @@ type
   TTokenStorage = class
   private
     function GetConfigDir: AnsiString;
-    function GetTokenFilePath: AnsiString;
+    function GetTokenFilePath(const Provider: AnsiString = ''): AnsiString;
     function EnsureConfigDir: Boolean;
     function SetFilePermissions(const FilePath: AnsiString): Boolean;
   public
+    // Legacy methods (for backward compatibility with Gemini)
     function SaveTokens(const Tokens: TOAuthTokens): Boolean;
     function LoadTokens: TOAuthTokens;
     function HasValidTokens: Boolean;
     function ClearTokens: Boolean;
     function TokensExist: Boolean;
+    
+    // Provider-specific methods
+    function SaveProviderTokens(const Provider: AnsiString; const Tokens: TOAuthTokens): Boolean;
+    function LoadProviderTokens(const Provider: AnsiString): TOAuthTokens;
+    function HasValidProviderTokens(const Provider: AnsiString): Boolean;
+    function ClearProviderTokens(const Provider: AnsiString): Boolean;
+    function ProviderTokensExist(const Provider: AnsiString): Boolean;
   end;
 
 const
@@ -61,9 +69,14 @@ begin
   Result := AnsiString(GetCurrentDir) + DirectorySeparator + GITPAL_CONFIG_DIR;
 end;
 
-function TTokenStorage.GetTokenFilePath: AnsiString;
+function TTokenStorage.GetTokenFilePath(const Provider: AnsiString): AnsiString;
 begin
-  Result := GetConfigDir + DirectorySeparator + OAUTH_CREDS_FILE;
+  if Provider = '' then
+    // Legacy path for Gemini compatibility
+    Result := GetConfigDir + DirectorySeparator + OAUTH_CREDS_FILE
+  else
+    // Provider-specific path
+    Result := GetConfigDir + DirectorySeparator + 'oauth_creds_' + Provider + '.json';
 end;
 
 function TTokenStorage.EnsureConfigDir: Boolean;
@@ -291,6 +304,174 @@ begin
   except
     Result := False;
   end;
+end;
+
+// Provider-specific method implementations
+
+function TTokenStorage.SaveProviderTokens(const Provider: AnsiString; const Tokens: TOAuthTokens): Boolean;
+var
+  JsonObj: TJSONObject;
+  JsonString: AnsiString;
+  FileStream: TFileStream;
+  TokenFilePath: AnsiString;
+begin
+  Result := False;
+  
+  if not EnsureConfigDir then
+    Exit;
+  
+  JsonObj := TJSONObject.Create;
+  try
+    JsonObj.Add('access_token', string(Tokens.AccessToken));
+    JsonObj.Add('refresh_token', string(Tokens.RefreshToken));
+    JsonObj.Add('token_type', string(Tokens.TokenType));
+    JsonObj.Add('expires_in', Tokens.ExpiresIn);
+    JsonObj.Add('expires_at', Tokens.ExpiresAt);
+    JsonObj.Add('scope', string(Tokens.Scope));
+    
+    JsonString := AnsiString(JsonObj.AsJSON);
+    TokenFilePath := GetTokenFilePath(Provider);
+    
+    try
+      FileStream := TFileStream.Create(string(TokenFilePath), fmCreate);
+      try
+        FileStream.WriteBuffer(JsonString[1], Length(JsonString));
+        Result := SetFilePermissions(TokenFilePath);
+      finally
+        FileStream.Free;
+      end;
+    except
+      Result := False;
+    end;
+  finally
+    JsonObj.Free;
+  end;
+end;
+
+function TTokenStorage.LoadProviderTokens(const Provider: AnsiString): TOAuthTokens;
+var
+  JsonParser: TJSONParser;
+  JsonData: TJSONObject;
+  JsonValue: TJSONData;
+  FileContent: string;
+  TokenFilePath: AnsiString;
+begin
+  // Initialize result
+  FillChar(Result, SizeOf(Result), 0);
+  Result.AccessToken := AnsiString('');
+  Result.RefreshToken := AnsiString('');
+  Result.TokenType := AnsiString('');
+  Result.ExpiresIn := 0;
+  Result.ExpiresAt := 0;
+  Result.Scope := AnsiString('');
+  
+  TokenFilePath := GetTokenFilePath(Provider);
+  
+  if not FileExists(string(TokenFilePath)) then
+    Exit;
+  
+  try
+    with TFileStream.Create(string(TokenFilePath), fmOpenRead) do
+    try
+      SetLength(FileContent, Size);
+      ReadBuffer(FileContent[1], Size);
+    finally
+      Free;
+    end;
+    
+    JsonParser := TJSONParser.Create(FileContent);
+    try
+      JsonData := JsonParser.Parse as TJSONObject;
+      try
+        JsonValue := JsonData.Find('access_token');
+        if Assigned(JsonValue) then
+          Result.AccessToken := AnsiString(JsonValue.AsString);
+        
+        JsonValue := JsonData.Find('refresh_token');
+        if Assigned(JsonValue) then
+          Result.RefreshToken := AnsiString(JsonValue.AsString);
+        
+        JsonValue := JsonData.Find('token_type');
+        if Assigned(JsonValue) then
+          Result.TokenType := AnsiString(JsonValue.AsString);
+        
+        JsonValue := JsonData.Find('expires_in');
+        if Assigned(JsonValue) then
+          Result.ExpiresIn := JsonValue.AsInteger;
+        
+        JsonValue := JsonData.Find('expires_at');
+        if Assigned(JsonValue) then
+          Result.ExpiresAt := JsonValue.AsInt64;
+        
+        JsonValue := JsonData.Find('scope');
+        if Assigned(JsonValue) then
+          Result.Scope := AnsiString(JsonValue.AsString);
+          
+      finally
+        JsonData.Free;
+      end;
+    finally
+      JsonParser.Free;
+    end;
+  except
+    // If anything goes wrong, return empty tokens
+    FillChar(Result, SizeOf(Result), 0);
+    Result.AccessToken := AnsiString('');
+    Result.RefreshToken := AnsiString('');
+    Result.TokenType := AnsiString('');
+    Result.ExpiresIn := 0;
+    Result.ExpiresAt := 0;
+    Result.Scope := AnsiString('');
+  end;
+end;
+
+function TTokenStorage.HasValidProviderTokens(const Provider: AnsiString): Boolean;
+var
+  Tokens: TOAuthTokens;
+  CurrentTime: Int64;
+  BufferTime: Int64;
+begin
+  Result := False;
+  
+  if not ProviderTokensExist(Provider) then
+    Exit;
+  
+  Tokens := LoadProviderTokens(Provider);
+  
+  if Tokens.AccessToken = '' then
+    Exit;
+  
+  // Check if token is expired (with 5-minute buffer)
+  CurrentTime := DateTimeToUnix(Now);
+  BufferTime := 5 * 60; // 5 minutes in seconds
+  
+  Result := (Tokens.ExpiresAt > 0) and (Tokens.ExpiresAt > (CurrentTime + BufferTime));
+end;
+
+function TTokenStorage.ClearProviderTokens(const Provider: AnsiString): Boolean;
+var
+  TokenFilePath: AnsiString;
+begin
+  Result := True;
+  TokenFilePath := GetTokenFilePath(Provider);
+  
+  try
+    if FileExists(string(TokenFilePath)) then
+    begin
+      if not DeleteFile(string(TokenFilePath)) then
+        Result := False;
+    end;
+  except
+    Result := False;
+  end;
+end;
+
+function TTokenStorage.ProviderTokensExist(const Provider: AnsiString): Boolean;
+var
+  TokenFilePath: AnsiString;
+begin
+  TokenFilePath := GetTokenFilePath(Provider);
+  Result := FileExists(string(TokenFilePath));
 end;
 
 end.

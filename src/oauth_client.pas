@@ -21,28 +21,42 @@ type
 
   TOAuthClient = class
   private
-    FHttpClient: TFPHTTPClient;
     function GenerateRandomHex(ByteCount: Integer): AnsiString;
+  protected
+    FHttpClient: TFPHTTPClient;
   public
     constructor Create;
     destructor Destroy; override;
     function GenerateState: AnsiString;
-    function BuildAuthorizationURL(const RedirectURI, State: AnsiString): AnsiString;
-    function ExchangeCodeForTokens(const AuthCode, RedirectURI: AnsiString): TOAuthTokens;
-    function RefreshTokens(const RefreshToken: AnsiString): TOAuthTokens;
-    function ValidateToken(const AccessToken: AnsiString): Boolean;
+    function BuildAuthorizationURL(const RedirectURI, State: AnsiString): AnsiString; virtual;
+    function ExchangeCodeForTokens(const AuthCode, RedirectURI: AnsiString): TOAuthTokens; virtual;
+    function RefreshTokens(const RefreshToken: AnsiString): TOAuthTokens; virtual;
+    function ValidateToken(const AccessToken: AnsiString): Boolean; virtual;
   end;
 
 const
   // Google OAuth 2.0 configuration (from gemini-cli)
-  OAUTH_CLIENT_ID = '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
-  OAUTH_CLIENT_SECRET = 'PLACEHOLDER_SECRET';
-  OAUTH_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
-  OAUTH_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
-  OAUTH_TOKEN_INFO_ENDPOINT = 'https://oauth2.googleapis.com/tokeninfo';
+  GOOGLE_OAUTH_CLIENT_ID = '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
+  GOOGLE_OAUTH_CLIENT_SECRET = 'PLACEHOLDER_SECRET';
+  GOOGLE_OAUTH_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+  GOOGLE_OAUTH_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+  GOOGLE_OAUTH_TOKEN_INFO_ENDPOINT = 'https://oauth2.googleapis.com/tokeninfo';
+  GOOGLE_OAUTH_SCOPES = 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile';
   
-  // OAuth scopes for Gemini Code Assist
-  OAUTH_SCOPES = 'https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile';
+  // Claude OAuth 2.0 configuration (from working opencode implementation)
+  CLAUDE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+  CLAUDE_OAUTH_CLIENT_SECRET = ''; // Public client - no secret needed for PKCE
+  CLAUDE_OAUTH_AUTH_ENDPOINT = 'https://claude.ai/oauth/authorize';
+  CLAUDE_OAUTH_TOKEN_ENDPOINT = 'https://console.anthropic.com/v1/oauth/token';
+  CLAUDE_OAUTH_SCOPES = 'org:create_api_key user:profile user:inference';
+  
+  // Backward compatibility aliases (for existing Gemini code)
+  OAUTH_CLIENT_ID = GOOGLE_OAUTH_CLIENT_ID;
+  OAUTH_CLIENT_SECRET = GOOGLE_OAUTH_CLIENT_SECRET;
+  OAUTH_AUTH_ENDPOINT = GOOGLE_OAUTH_AUTH_ENDPOINT;
+  OAUTH_TOKEN_ENDPOINT = GOOGLE_OAUTH_TOKEN_ENDPOINT;
+  OAUTH_TOKEN_INFO_ENDPOINT = GOOGLE_OAUTH_TOKEN_INFO_ENDPOINT;
+  OAUTH_SCOPES = GOOGLE_OAUTH_SCOPES;
 
 implementation
 

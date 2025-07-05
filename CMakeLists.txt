@@ -61,6 +61,9 @@ set(GITPAL_SOURCES
     src/config_manager.pas
     src/provider_config.pas
     src/logging.pas
+    src/claude_oauth_client.pas
+    src/claude_oauth_provider.pas
+    src/claude_oauth_adapter.pas
     # Add other source dependencies here as needed
 )
 

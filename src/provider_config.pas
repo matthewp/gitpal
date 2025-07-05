@@ -7,7 +7,8 @@ unit provider_config;
 interface
 
 uses
-  SysUtils, Classes, models, openai_provider, claude_provider, gemini_provider, config_manager;
+  SysUtils, Classes, models, openai_provider, claude_provider, gemini_provider, 
+  claude_oauth_provider, config_manager;
 
 type
   TProviderInfo = record
@@ -187,6 +188,7 @@ begin
   if not IsValidProvider(ProviderName) then
     raise Exception.CreateFmt('Unknown provider: %s', [string(ProviderName)]);
   
+  // API key required for all providers (OAuth is handled in CreateProviderFromConfig)
   if ApiKey = '' then
     raise Exception.CreateFmt('API key required for provider: %s', [string(ProviderName)]);
   
@@ -211,22 +213,44 @@ var
   ProviderConfig: TProviderConfig;
   ApiKey: AnsiString;
 begin
+  ProviderConfig := Config.GetProviderConfig(ProviderName);
+  
+  // Handle Claude OAuth case specially
+  if (ProviderName = PROVIDER_CLAUDE) and (ProviderConfig.AuthMethod = amOAuth) then
+  begin
+    Result := TClaudeOAuthProvider.Create;
+    Exit;
+  end;
+  
+  // For API key providers, validate API key exists
   if not Config.HasProviderApiKey(ProviderName) then
     raise Exception.CreateFmt('No API key configured for provider: %s', [string(ProviderName)]);
   
-  ProviderConfig := Config.GetProviderConfig(ProviderName);
   ApiKey := ProviderConfig.ApiKey;
   
   Result := CreateProvider(ProviderName, ApiKey, ProviderConfig.Model);
 end;
 
 function TProviderRegistry.CreateDefaultProvider(Config: TGitPalConfig): ILLMProvider;
+var
+  ProviderConfig: TProviderConfig;
 begin
   if Config.DefaultProvider = '' then
     raise Exception.Create('No default provider configured');
   
-  if not Config.HasProviderApiKey(Config.DefaultProvider) then
-    raise Exception.CreateFmt('Default provider %s has no API key configured', [string(Config.DefaultProvider)]);
+  ProviderConfig := Config.GetProviderConfig(Config.DefaultProvider);
+  
+  // Check for proper authentication
+  if ProviderConfig.AuthMethod = amOAuth then
+  begin
+    if ProviderConfig.OAuthAccessToken = '' then
+      raise Exception.CreateFmt('Default provider %s has no OAuth tokens configured', [string(Config.DefaultProvider)]);
+  end
+  else
+  begin
+    if not Config.HasProviderApiKey(Config.DefaultProvider) then
+      raise Exception.CreateFmt('Default provider %s has no API key configured', [string(Config.DefaultProvider)]);
+  end;
   
   Result := CreateProviderFromConfig(Config, Config.DefaultProvider);
 end;

@@ -13,13 +13,18 @@ uses
   SysUtils,
   Classes,
   config_manager,
-  provider_config;
+  provider_config,
+  claude_oauth_provider,
+  oauth_client,
+  logging;
 
 type
   TSetupWizardState = (
     swWelcome,
     swProviderSelection,
+    swClaudeAuthMethod,  // NEW: Choose API key vs OAuth for Claude
     swApiKeyInput,
+    swOAuthFlow,         // NEW: OAuth authentication flow
     swModelSelection,
     swSummary,
     swCompleted
@@ -42,16 +47,26 @@ type
     FCursor: Boolean;
     FErrorMessage: AnsiString;
     
+    // Claude authentication method selection
+    FSelectedAuthMethod: TAuthMethod;
+    FSelectedAuthMethodIndex: Integer;
+    
+    // OAuth tokens (temporarily stored after authentication)
+    FOAuthTokens: TOAuthTokens;
+    
     // State management
     procedure InitializeProviderLists;
     procedure DetectEnvironmentApiKey;
     function ValidateCurrentInput: Boolean;
     procedure SaveConfiguration;
+    procedure PerformOAuthAuthentication;
     
     // View helpers
     function RenderWelcome: string;
     function RenderProviderSelection: string;
+    function RenderClaudeAuthMethod: string;     // NEW
     function RenderApiKeyInput: string;
+    function RenderOAuthFlow: string;            // NEW
     function RenderModelSelection: string;
     function RenderSummary: string;
     function RenderCompleted: string;
@@ -79,6 +94,14 @@ begin
   FTerminalHeight := 0; // Will be set by WindowSizeMsg
   FState := swWelcome;
   FConfig := TGitPalConfig.Create;
+  
+  // If config already exists, load it so we can preserve existing settings
+  if FConfig.ConfigExists then
+  begin
+    DebugLog('TSetupModel.Create: Existing config found, loading current settings');
+    FConfig.LoadConfig;
+  end;
+  
   FRegistry := TProviderRegistry.Create;
   FSelectedProviderIndex := 0;
   FSelectedModelIndex := 0;
@@ -86,6 +109,19 @@ begin
   FDetectedApiKey := AnsiString('');
   FCursor := True;
   FErrorMessage := AnsiString('');
+  
+  // Initialize Claude auth method selection
+  FSelectedAuthMethod := amApiKey;
+  FSelectedAuthMethodIndex := 0;
+  
+  // Initialize OAuth tokens
+  FillChar(FOAuthTokens, SizeOf(FOAuthTokens), 0);
+  FOAuthTokens.AccessToken := AnsiString('');
+  FOAuthTokens.RefreshToken := AnsiString('');
+  FOAuthTokens.TokenType := AnsiString('');
+  FOAuthTokens.ExpiresIn := 0;
+  FOAuthTokens.ExpiresAt := 0;
+  FOAuthTokens.Scope := AnsiString('');
   
   InitializeProviderLists;
 end;
@@ -141,15 +177,43 @@ var
   ProviderConfig: TProviderConfig;
   ApiKeyToUse: AnsiString;
 begin
-  // Determine which API key to use
-  if FApiKeyInput <> '' then
-    ApiKeyToUse := FApiKeyInput
-  else
-    ApiKeyToUse := FDetectedApiKey;
-  
   // Configure the selected provider
   ProviderConfig.Enabled := True;
-  ProviderConfig.ApiKey := ApiKeyToUse;
+  
+  // Set auth method (default to API key for non-Claude providers)
+  if FSelectedProvider = PROVIDER_CLAUDE then
+    ProviderConfig.AuthMethod := FSelectedAuthMethod
+  else
+    ProviderConfig.AuthMethod := amApiKey;
+  
+  // For OAuth providers, set the OAuth tokens; for API key providers, set the key
+  if ProviderConfig.AuthMethod = amOAuth then
+  begin
+    ProviderConfig.ApiKey := AnsiString(''); // OAuth doesn't use API keys
+    // Set OAuth tokens from the authentication flow
+    ProviderConfig.OAuthAccessToken := FOAuthTokens.AccessToken;
+    ProviderConfig.OAuthRefreshToken := FOAuthTokens.RefreshToken;
+    ProviderConfig.OAuthTokenType := FOAuthTokens.TokenType;
+    ProviderConfig.OAuthExpiresAt := FOAuthTokens.ExpiresAt;
+    ProviderConfig.OAuthScope := FOAuthTokens.Scope;
+  end
+  else
+  begin
+    // Determine which API key to use
+    if FApiKeyInput <> '' then
+      ApiKeyToUse := FApiKeyInput
+    else
+      ApiKeyToUse := FDetectedApiKey;
+    ProviderConfig.ApiKey := ApiKeyToUse;
+    // Clear any OAuth tokens
+    ProviderConfig.OAuthAccessToken := AnsiString('');
+    ProviderConfig.OAuthRefreshToken := AnsiString('');
+    ProviderConfig.OAuthTokenType := AnsiString('');
+    ProviderConfig.OAuthExpiresAt := 0;
+    ProviderConfig.OAuthScope := AnsiString('');
+  end;
+  
+  // Set model
   if Assigned(FAvailableModels) and (FSelectedModelIndex < FAvailableModels.Count) then
     ProviderConfig.Model := AnsiString(FAvailableModels[FSelectedModelIndex])
   else
@@ -162,17 +226,67 @@ begin
   FConfig.SaveConfig;
 end;
 
+procedure TSetupModel.PerformOAuthAuthentication;
+var
+  OAuthProvider: TClaudeOAuthProvider;
+begin
+  DebugLog('Starting OAuth authentication...');
+  try
+    DebugLog('Creating TClaudeOAuthProvider...');
+    OAuthProvider := TClaudeOAuthProvider.Create;
+    try
+      DebugLog('Calling OAuthProvider.Authenticate...');
+      if OAuthProvider.Authenticate then
+      begin
+        DebugLog('Authentication successful!');
+        // Store the tokens temporarily
+        FOAuthTokens := OAuthProvider.GetCurrentTokens;
+        // Authentication successful, proceed to model selection
+        if Assigned(FAvailableModels) then FAvailableModels.Free;
+        FAvailableModels := FRegistry.GetAvailableModels(FSelectedProvider);
+        FSelectedModelIndex := 0;
+        FState := swModelSelection;
+      end
+      else
+      begin
+        DebugLog('Authentication failed');
+        FErrorMessage := AnsiString('OAuth authentication failed. Please try again.');
+      end;
+    finally
+      OAuthProvider.Free;
+    end;
+  except
+    on E: Exception do
+    begin
+      DebugLog('Exception occurred: ' + E.Message);
+      FErrorMessage := AnsiString('OAuth authentication error: ' + E.Message);
+    end;
+  end;
+end;
+
 function TSetupModel.RenderWelcome: string;
 var
   Style: bobastyle.TStyle;
   Content: AnsiString;
   PaddedContent: AnsiString;
 begin
-  Content := 
-    AnsiString('Welcome to gitpal setup!') + #10 + #10 +
-    AnsiString('This wizard will help you configure gitpal to use AI for generating') + #10 +
-    AnsiString('commit messages. You can choose between OpenAI, Claude, or Gemini.') + #10 + #10 +
-    AnsiString('Press ENTER to continue or ESC to exit.');
+  if FConfig.ConfigExists then
+  begin
+    Content := 
+      AnsiString('gitpal setup - Reconfiguration') + #10 + #10 +
+      AnsiString('An existing configuration was found. This wizard will help you') + #10 +
+      AnsiString('update your AI provider settings for generating commit messages.') + #10 + #10 +
+      AnsiString('You can choose between OpenAI, Claude, or Gemini.') + #10 + #10 +
+      AnsiString('Press ENTER to continue or ESC to exit.');
+  end
+  else
+  begin
+    Content := 
+      AnsiString('Welcome to gitpal setup!') + #10 + #10 +
+      AnsiString('This wizard will help you configure gitpal to use AI for generating') + #10 +
+      AnsiString('commit messages. You can choose between OpenAI, Claude, or Gemini.') + #10 + #10 +
+      AnsiString('Press ENTER to continue or ESC to exit.');
+  end;
   
   PaddedContent := AnsiString(' ') + Content + AnsiString(' ');
   
@@ -330,16 +444,24 @@ begin
   else
     ModelName := FRegistry.GetDefaultModelForProvider(FSelectedProvider);
   
-  if FApiKeyInput <> '' then
-    ApiKeyDisplay := Copy(FApiKeyInput, 1, 8) + AnsiString('...(manual)')
+  // Handle display for different auth methods
+  if (FSelectedProvider = PROVIDER_CLAUDE) and (FSelectedAuthMethod = amOAuth) then
+  begin
+    ApiKeyDisplay := AnsiString('OAuth (Claude Pro/Max)');
+  end
   else
-    ApiKeyDisplay := Copy(FDetectedApiKey, 1, 8) + AnsiString('...(from env)');
+  begin
+    if FApiKeyInput <> '' then
+      ApiKeyDisplay := Copy(FApiKeyInput, 1, 8) + AnsiString('...(manual)')
+    else
+      ApiKeyDisplay := Copy(FDetectedApiKey, 1, 8) + AnsiString('...(from env)');
+  end;
   
   Content := 
     AnsiString('Configuration Summary:') + #10 + #10 +
     AnsiString('Provider: ') + ProviderInfo.DisplayName + #10 +
     AnsiString('Model: ') + ModelName + #10 +
-    AnsiString('API Key: ') + ApiKeyDisplay + #10 +
+    AnsiString('Authentication: ') + ApiKeyDisplay + #10 +
     AnsiString('Config: ~/.config/gitpal/config.json') + #10 + #10 +
     AnsiString('Press ENTER to save and complete setup, ESC to go back.');
   
@@ -407,6 +529,66 @@ begin
   end;
 end;
 
+function TSetupModel.RenderClaudeAuthMethod: string;
+var
+  Style: bobastyle.TStyle;
+  Content: AnsiString;
+  PaddedContent: AnsiString;
+begin
+  Content := AnsiString('Choose Claude authentication method:') + #10 + #10;
+  
+  if FSelectedAuthMethodIndex = 0 then
+    Content := Content + AnsiString('> API Key') + #10 + AnsiString('  Use Anthropic API key (pay-per-use)') + #10 + #10
+  else
+    Content := Content + AnsiString('  API Key') + #10 + AnsiString('  Use Anthropic API key (pay-per-use)') + #10 + #10;
+  
+  if FSelectedAuthMethodIndex = 1 then
+    Content := Content + AnsiString('> Claude Pro/Max Login') + #10 + AnsiString('  Use your Claude subscription (no additional API costs)') + #10 + #10
+  else
+    Content := Content + AnsiString('  Claude Pro/Max Login') + #10 + AnsiString('  Use your Claude subscription (no additional API costs)') + #10 + #10;
+  
+  Content := Content + AnsiString('Use ↑/↓ (or k/j) to select, ENTER to confirm, ESC to go back.');
+  
+  PaddedContent := AnsiString(' ') + Content + AnsiString(' ');
+  
+  Style := bobastyle.TStyle.Create;
+  try
+    Style.BorderStyle := bobastyle.bsSingle;
+    Style.BorderColor := bobastyle.cBrightCyan;
+    Style.Width := FTerminalWidth;
+    Style.Content := PaddedContent;
+    Result := Style.Render;
+  finally
+    Style.Free;
+  end;
+end;
+
+function TSetupModel.RenderOAuthFlow: string;
+var
+  Style: bobastyle.TStyle;
+  Content: AnsiString;
+  PaddedContent: AnsiString;
+begin
+  Content := AnsiString('Claude Pro/Max Authentication') + #10 + #10 +
+    AnsiString('Opening your browser for Claude authentication...') + #10 + #10 +
+    AnsiString('If the browser doesn''t open automatically, you''ll see a URL to visit.') + #10 +
+    AnsiString('After authorizing in your browser, return here to continue setup.') + #10 + #10 +
+    AnsiString('Press ENTER to start authentication, ESC to go back.');
+  
+  PaddedContent := AnsiString(' ') + Content + AnsiString(' ');
+  
+  Style := bobastyle.TStyle.Create;
+  try
+    Style.BorderStyle := bobastyle.bsSingle;
+    Style.BorderColor := bobastyle.cBrightBlue;
+    Style.Width := FTerminalWidth;
+    Style.Content := PaddedContent;
+    Result := Style.Render;
+  finally
+    Style.Free;
+  end;
+end;
+
 procedure TSetupModel.NextState;
 begin
   case FState of
@@ -415,7 +597,30 @@ begin
       begin
         FSelectedProvider := AnsiString(FProviderNames[FSelectedProviderIndex]);
         DetectEnvironmentApiKey;
-        FState := swApiKeyInput;
+        // For Claude, go to auth method selection; for others, go directly to API key input
+        if FSelectedProvider = PROVIDER_CLAUDE then
+          FState := swClaudeAuthMethod
+        else
+          FState := swApiKeyInput;
+      end;
+    swClaudeAuthMethod:
+      begin
+        // Set the selected auth method based on user choice
+        if FSelectedAuthMethodIndex = 0 then
+          FSelectedAuthMethod := amApiKey
+        else
+          FSelectedAuthMethod := amOAuth;
+        
+        // Route to appropriate next step
+        if FSelectedAuthMethod = amApiKey then
+          FState := swApiKeyInput
+        else
+          FState := swOAuthFlow;
+      end;
+    swOAuthFlow:
+      begin
+        // Perform OAuth authentication
+        PerformOAuthAuthentication;
       end;
     swApiKeyInput:
       begin
@@ -447,13 +652,26 @@ procedure TSetupModel.PreviousState;
 begin
   case FState of
     swProviderSelection: FState := swWelcome;
+    swClaudeAuthMethod: FState := swProviderSelection;
     swApiKeyInput:
       begin
         FApiKeyInput := AnsiString('');
         FDetectedApiKey := AnsiString('');
-        FState := swProviderSelection;
+        // Go back to auth method selection for Claude, provider selection for others
+        if FSelectedProvider = PROVIDER_CLAUDE then
+          FState := swClaudeAuthMethod
+        else
+          FState := swProviderSelection;
       end;
-    swModelSelection: FState := swApiKeyInput;
+    swOAuthFlow: FState := swClaudeAuthMethod;
+    swModelSelection:
+      begin
+        // Go back to appropriate previous state based on auth method
+        if (FSelectedProvider = PROVIDER_CLAUDE) and (FSelectedAuthMethod = amOAuth) then
+          FState := swOAuthFlow
+        else
+          FState := swApiKeyInput;
+      end;
     swSummary: FState := swModelSelection;
   end;
 end;
@@ -475,7 +693,9 @@ begin
   case FState of
     swWelcome: Result := RenderWelcome;
     swProviderSelection: Result := RenderProviderSelection;
+    swClaudeAuthMethod: Result := RenderClaudeAuthMethod;
     swApiKeyInput: Result := RenderApiKeyInput;
+    swOAuthFlow: Result := RenderOAuthFlow;
     swModelSelection: Result := RenderModelSelection;
     swSummary: Result := RenderSummary;
     swCompleted: Result := RenderCompleted;
@@ -532,6 +752,9 @@ begin
         swProviderSelection:
           if FSelectedProviderIndex > 0 then
             Dec(FSelectedProviderIndex);
+        swClaudeAuthMethod:
+          if FSelectedAuthMethodIndex > 0 then
+            Dec(FSelectedAuthMethodIndex);
         swModelSelection:
           if FSelectedModelIndex > 0 then
             Dec(FSelectedModelIndex);
@@ -543,6 +766,9 @@ begin
         swProviderSelection:
           if FSelectedProviderIndex < FProviderNames.Count - 1 then
             Inc(FSelectedProviderIndex);
+        swClaudeAuthMethod:
+          if FSelectedAuthMethodIndex < 1 then  // Only 2 options (0 and 1)
+            Inc(FSelectedAuthMethodIndex);
         swModelSelection:
           if Assigned(FAvailableModels) and (FSelectedModelIndex < FAvailableModels.Count - 1) then
             Inc(FSelectedModelIndex);
