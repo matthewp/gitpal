@@ -235,8 +235,8 @@ begin
     DebugLog('Creating TClaudeOAuthProvider...');
     OAuthProvider := TClaudeOAuthProvider.Create;
     try
-      DebugLog('Calling OAuthProvider.Authenticate...');
-      if OAuthProvider.Authenticate then
+      DebugLog('Calling OAuthProvider.AuthenticateForce...');
+      if OAuthProvider.AuthenticateForce then
       begin
         DebugLog('Authentication successful!');
         // Store the tokens temporarily

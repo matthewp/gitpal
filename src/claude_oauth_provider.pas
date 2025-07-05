@@ -31,6 +31,7 @@ type
     
     // OAuth-specific methods
     function Authenticate: Boolean;
+    function AuthenticateForce: Boolean; // Force new OAuth flow, ignore existing tokens
     function IsAuthenticated: Boolean;
     function GetCurrentAccessToken: AnsiString;
     function GetCurrentTokens: TOAuthTokens;
@@ -311,6 +312,25 @@ begin
   
   // Need to perform OAuth flow
   DebugLog('TClaudeOAuthProvider.Authenticate: Starting OAuth flow');
+  Result := PerformOAuthFlow;
+end;
+
+function TClaudeOAuthProvider.AuthenticateForce: Boolean;
+begin
+  DebugLog('TClaudeOAuthProvider.AuthenticateForce: Starting forced authentication (ignoring existing tokens)');
+  
+  // Clear any existing tokens to force new OAuth flow
+  FillChar(FCurrentTokens, SizeOf(FCurrentTokens), 0);
+  FCurrentTokens.AccessToken := AnsiString('');
+  FCurrentTokens.RefreshToken := AnsiString('');
+  FCurrentTokens.TokenType := AnsiString('');
+  FCurrentTokens.ExpiresIn := 0;
+  FCurrentTokens.ExpiresAt := 0;
+  FCurrentTokens.Scope := AnsiString('');
+  FTokensLoaded := False;
+  
+  // Force OAuth flow
+  DebugLog('TClaudeOAuthProvider.AuthenticateForce: Starting OAuth flow');
   Result := PerformOAuthFlow;
 end;
 
