@@ -13,7 +13,7 @@ uses
   config_manager;
 
 const
-  AppVersion = '0.3.2';  // Update this when tagging new releases
+  AppVersion = '0.3.3';  // Update this when tagging new releases
 
 function EnsureConfigurationExists: Boolean;
 var
