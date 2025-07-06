@@ -4,9 +4,7 @@ unit bobaui;
 {$codepage UTF8}
 {$H+}
 
-{* Commented out debug logging
 {$DEFINE BOBAUI_DEBUG} // Enable debug logging
-*}
 
 interface
 
@@ -389,6 +387,7 @@ type
     FNeedsFullRedraw: Boolean;
     FRenderingStrategy: TRenderingStrategy;
     FAnsiRenderer: TAnsiRenderer;
+    FLastBaseY: Integer;  // Track base Y to detect scrolling
   public
     constructor Create(AAnsiRenderer: TAnsiRenderer; ARenderingStrategy: TRenderingStrategy);
     destructor Destroy; override;
@@ -2081,6 +2080,7 @@ begin
   FRenderingStrategy := ARenderingStrategy;
   SetLength(FLastRender, 0);
   FNeedsFullRedraw := True;
+  FLastBaseY := -1; // Initialize to invalid value
 end;
 
 destructor TDifferentialRenderer.Destroy;
@@ -2098,10 +2098,13 @@ end;
 procedure TDifferentialRenderer.DifferentialWrite(const Content: string);
 var
   NewLines: TStringArray;
+  BaseX, BaseY: Integer;
+  I: Integer;
 begin
   {$IFDEF BOBAUI_DEBUG}
   BDebugLog('TDifferentialRenderer.DifferentialWrite - Entry');
   BDebugLog('  Content length: ' + IntToStr(Length(Content)) + ' bytes');
+  BDebugLog('  FULL CONTENT: "' + Content + '"');
   {$ENDIF}
   
   // Split content into lines using the function from bobastyle
@@ -2111,6 +2114,8 @@ begin
   BDebugLog('  Line count: ' + IntToStr(Length(NewLines)));
   BDebugLog('  FNeedsFullRedraw: ' + BoolToStr(FNeedsFullRedraw, True));
   BDebugLog('  Length(FLastRender): ' + IntToStr(Length(FLastRender)));
+  for I := 0 to High(NewLines) do
+    BDebugLog('  NewLines[' + IntToStr(I) + ']: "' + NewLines[I] + '"');
   {$ENDIF}
   
   
@@ -2119,6 +2124,46 @@ begin
   begin
     HandleFirstRender(NewLines);
     Exit;
+  end;
+  
+  // Check if scrolling occurred by detecting base Y change
+  if FRenderingStrategy is TInlineRenderingStrategy then
+  begin
+    FRenderingStrategy.FCursorPosition.GetInlineBase(BaseX, BaseY);
+    {$IFDEF BOBAUI_DEBUG}
+    BDebugLog('  Current base Y: ' + IntToStr(BaseY) + ', Last base Y: ' + IntToStr(FLastBaseY));
+    {$ENDIF}
+    if (FLastBaseY <> -1) and (BaseY <> FLastBaseY) then
+    begin
+      {$IFDEF BOBAUI_DEBUG}
+      BDebugLog('  SCROLLING DETECTED! Base Y changed from ' + IntToStr(FLastBaseY) + ' to ' + IntToStr(BaseY));
+      BDebugLog('  Forcing full redraw due to scrolling (WITHOUT re-initializing base)');
+      {$ENDIF}
+      // Force redraw but DON'T re-initialize - use existing corrected base position
+      // Write all lines using strategy positioning (without re-initializing base)
+      {$IFDEF BOBAUI_DEBUG}
+      BDebugLog('  Redrawing ' + IntToStr(Length(NewLines)) + ' lines without re-initialization');
+      {$ENDIF}
+      for I := 0 to High(NewLines) do
+      begin
+        {$IFDEF BOBAUI_DEBUG}
+        BDebugLog('  Processing Line ' + IntToStr(I) + ': "' + Copy(NewLines[I], 1, 50) + '"...');
+        {$ENDIF}
+        FRenderingStrategy.PositionForLine(I);
+        system.write(NewLines[I]);
+        FRenderingStrategy.FinalizeLine;
+        {$IFDEF BOBAUI_DEBUG}
+        BDebugLog('  Finished writing line ' + IntToStr(I));
+        {$ENDIF}
+      end;
+      // Update state
+      FLastRender := Copy(NewLines);
+      FNeedsFullRedraw := False;
+      system.flush(output);
+      FLastBaseY := BaseY;
+      Exit;
+    end;
+    FLastBaseY := BaseY;
   end;
   
   // Differential rendering
@@ -2209,6 +2254,14 @@ begin
     // Update line if needed
     if ShouldUpdateLine(I, Line) then
     begin
+      {$IFDEF BOBAUI_DEBUG}
+      BDebugLog('  UPDATING Line ' + IntToStr(I) + ': "' + Line + '"');
+      if I < Length(FLastRender) then
+        BDebugLog('    Previous: "' + FLastRender[I] + '"')
+      else
+        BDebugLog('    Previous: (none - new line)');
+      {$ENDIF}
+      
       // Use strategy for line positioning
       FRenderingStrategy.PositionForLine(I);
       
@@ -2225,6 +2278,12 @@ begin
         if bobastyle.Utf8DisplayWidth(Line) < FRenderingStrategy.FDisplay.GetWidth then
           FAnsiRenderer.ClearToEndOfLine;
       end;
+    end
+    else
+    begin
+      {$IFDEF BOBAUI_DEBUG}
+      BDebugLog('  SKIPPING Line ' + IntToStr(I) + ': "' + Line + '" (unchanged)');
+      {$ENDIF}
     end;
   end;
 end;

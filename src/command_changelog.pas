@@ -19,7 +19,9 @@ uses
   Classes,
   fpjson,
   jsonparser,
-  SyncObjs;
+  SyncObjs,
+  Math,
+  logging;
 
 // Forward declarations for async operations
 type
@@ -32,6 +34,19 @@ type
     osIdle,           // No operation running
     osGenerating,     // Generating changelog
     osCancelling      // Cancelling current operation
+  );
+
+// Progress stage enumeration for better user feedback
+type
+  TProgressStage = (
+    psInitializing,   // Starting up, getting ready
+    psAnalyzingTags,  // Reading and analyzing git tags
+    psReadingChangelog, // Reading existing changelog file
+    psAnalyzingHistory, // Analyzing git history and commits
+    psGeneratingEntries, // AI is generating changelog entries
+    psWritingChangelog,  // Writing the updated changelog
+    psCompleted,      // Operation completed successfully
+    psError           // Error occurred
   );
 
 // Base class for async operation results
@@ -58,6 +73,21 @@ type
     constructor Create(const AOperationId: string; const AResult: string);
     constructor CreateError(const AOperationId: string; const AErrorMessage: string);
     property Result: string read FResult;
+  end;
+
+// Progress update message for intermediate progress reporting
+type
+  TAsyncProgressUpdateMsg = class(TAsyncResultMsg)
+  private
+    FProgressStage: TProgressStage;
+    FProgressMessage: string;
+    FTagsInRange: string;
+  public
+    constructor Create(const AOperationId: string; AStage: TProgressStage; 
+                     const AMessage: string; const ATagsInRange: string = '');
+    property ProgressStage: TProgressStage read FProgressStage;
+    property ProgressMessage: string read FProgressMessage;
+    property TagsInRange: string read FTagsInRange;
   end;
 
 // Base class for background operations
@@ -125,10 +155,27 @@ type
     FOperationId: string;
     FTerminalWidth: Integer;
     FTerminalHeight: Integer;
+    // Information-based progress tracking
+    FProgressStage: TProgressStage;
+    FTagsInRange: string;
+    FProgressMessage: string;
+    FCompletionSummary: string;
+    // Information we've collected
+    FAnalyzingTagsCompleted: Boolean;
+    FAnalyzingTagsMessage: string;
+    FReadingChangelogCompleted: Boolean;
+    FReadingChangelogMessage: string;
+    FAnalyzingHistoryCompleted: Boolean;
+    FAnalyzingHistoryMessage: string;
+    FGeneratingEntriesCompleted: Boolean;
+    FGeneratingEntriesMessage: string;
+    FWritingChangelogCompleted: Boolean;
+    FWritingChangelogMessage: string;
     
     procedure StartChangelogGeneration;
     procedure CancelCurrentOperation;
     function GenerateOperationId: string;
+    procedure SendProgressUpdate(AStage: TProgressStage; const AMessage: string; const ATagsInRange: string = '');
   public
     constructor Create(const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = '');
     destructor Destroy; override;
@@ -174,6 +221,12 @@ var
 // Forward declaration for the original generation function
 function GenerateChangelogAsync(const RepoPath: string; const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = ''): string; forward;
 
+// Forward declaration for progress-aware generation function
+function GenerateChangelogAsyncWithProgress(const RepoPath: string; const OperationId: string; const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = ''): string; forward;
+
+// Forward declaration for progress update helper
+procedure SendAsyncProgressUpdate(const AOperationId: string; AStage: TProgressStage; const AMessage: string; const ATagsInRange: string = ''); forward;
+
 { TAsyncResultMsg }
 
 constructor TAsyncResultMsg.Create(const AOperationId: string; ASuccess: Boolean; 
@@ -197,6 +250,17 @@ constructor TAsyncChangelogCompletedMsg.CreateError(const AOperationId: string; 
 begin
   inherited Create(AOperationId, False, AErrorMessage);
   FResult := '';
+end;
+
+{ TAsyncProgressUpdateMsg }
+
+constructor TAsyncProgressUpdateMsg.Create(const AOperationId: string; AStage: TProgressStage; 
+                                         const AMessage: string; const ATagsInRange: string);
+begin
+  inherited Create(AOperationId, True, '');
+  FProgressStage := AStage;
+  FProgressMessage := AMessage;
+  FTagsInRange := ATagsInRange;
 end;
 
 { TAsyncOperation }
@@ -347,7 +411,7 @@ var
   GenerationResult: string;
 begin
   try
-    GenerationResult := GenerateChangelogAsync(FRepoPath, FProviderOverride, FFromTag, FToTag);
+    GenerationResult := GenerateChangelogAsyncWithProgress(FRepoPath, FOperationId, FProviderOverride, FFromTag, FToTag);
     Result := TAsyncChangelogCompletedMsg.Create(FOperationId, GenerationResult);
   except
     on E: Exception do
@@ -376,6 +440,22 @@ begin
   FOperationId := '';
   FTerminalWidth := 0;
   FTerminalHeight := 0;
+  // Initialize information-based progress tracking
+  FProgressStage := psInitializing;
+  FTagsInRange := '';
+  FProgressMessage := '';
+  FCompletionSummary := '';
+  // Initialize stage completion flags and messages
+  FAnalyzingTagsCompleted := False;
+  FAnalyzingTagsMessage := '';
+  FReadingChangelogCompleted := False;
+  FReadingChangelogMessage := '';
+  FAnalyzingHistoryCompleted := False;
+  FAnalyzingHistoryMessage := '';
+  FGeneratingEntriesCompleted := False;
+  FGeneratingEntriesMessage := '';
+  FWritingChangelogCompleted := False;
+  FWritingChangelogMessage := '';
 end;
 
 destructor TChangelogModel.Destroy;
@@ -404,10 +484,62 @@ var
   KeyMsg: bobaui.TKeyMsg;
   WindowMsg: bobaui.TWindowSizeMsg;
   AsyncChangelogMsg: TAsyncChangelogCompletedMsg;
+  AsyncProgressMsg: TAsyncProgressUpdateMsg;
   NewSpinner: TSpinner;
 begin
   Result.Model := Self;
   Result.Cmd := nil;
+
+  // Handle async progress update messages
+  if Msg is TAsyncProgressUpdateMsg then
+  begin
+    AsyncProgressMsg := TAsyncProgressUpdateMsg(Msg);
+    if AsyncProgressMsg.OperationId = FOperationId then
+    begin
+      // Mark previous stage as completed if we're moving to a new stage
+      if (FProgressStage <> AsyncProgressMsg.ProgressStage) and (FProgressStage <> psInitializing) then
+      begin
+        case FProgressStage of
+          psAnalyzingTags:
+            FAnalyzingTagsCompleted := True;
+          psReadingChangelog:
+            FReadingChangelogCompleted := True;
+          psAnalyzingHistory:
+            FAnalyzingHistoryCompleted := True;
+          psGeneratingEntries:
+            FGeneratingEntriesCompleted := True;
+          psWritingChangelog:
+            FWritingChangelogCompleted := True;
+        end;
+      end;
+      
+      // Update current stage and collect information
+      FProgressStage := AsyncProgressMsg.ProgressStage;
+      FProgressMessage := AsyncProgressMsg.ProgressMessage;
+      
+      // Store tags information (persistent across stages)
+      if AsyncProgressMsg.TagsInRange <> '' then
+      begin
+        FTagsInRange := AsyncProgressMsg.TagsInRange;
+        DebugLog('UI received tags: ' + FTagsInRange);
+      end;
+      
+      // Store stage-specific messages
+      case AsyncProgressMsg.ProgressStage of
+        psAnalyzingTags:
+          FAnalyzingTagsMessage := AsyncProgressMsg.ProgressMessage;
+        psReadingChangelog:
+          FReadingChangelogMessage := AsyncProgressMsg.ProgressMessage;
+        psAnalyzingHistory:
+          FAnalyzingHistoryMessage := AsyncProgressMsg.ProgressMessage;
+        psGeneratingEntries:
+          FGeneratingEntriesMessage := AsyncProgressMsg.ProgressMessage;
+        psWritingChangelog:
+          FWritingChangelogMessage := AsyncProgressMsg.ProgressMessage;
+      end;
+    end;
+    Exit; // Don't process other messages this cycle
+  end;
 
   // Handle async changelog completion messages
   if Msg is TAsyncChangelogCompletedMsg then
@@ -423,12 +555,23 @@ begin
         // Success - display result and quit automatically
         if Pos('SUCCESS:', AsyncChangelogMsg.Result) = 1 then
         begin
-          SetSuccess('Changelog generated successfully');
+          // Mark all stages as completed
+          FAnalyzingTagsCompleted := True;
+          FReadingChangelogCompleted := True;
+          FAnalyzingHistoryCompleted := True;
+          FGeneratingEntriesCompleted := True;
+          FWritingChangelogCompleted := True;
+          FProgressStage := psCompleted;
+          // Don't set a success message since we'll show the progress list
+          FIsGenerating := False;
+          FState := 'success';
+          FSuccessMessage := '';  // Clear to avoid duplicate message
           Result.Cmd := bobaui.QuitCmd;
           Exit;
         end
         else
         begin
+          FProgressStage := psError;
           SetError(AsyncChangelogMsg.Result);
           Result.Cmd := bobaui.QuitCmd;
           Exit;
@@ -437,6 +580,7 @@ begin
       else
       begin
         // Error - show error message and quit automatically
+        FProgressStage := psError;
         SetError(AsyncChangelogMsg.ErrorMessage);
         Result.Cmd := bobaui.QuitCmd;
         Exit;
@@ -498,15 +642,123 @@ begin
 end;
 
 function TChangelogModel.View: string;
+var
+  Lines: TStringList;
+  StatusIcon: AnsiString;
+  Output: AnsiString;
+  i: Integer;
 begin
-  if FIsGenerating then
-    Result := FSpinner.View + ' Generating changelog...'
-  else if FErrorMessage <> '' then
-    Result := bobastyle.ColorText(#$E2#$9C#$97 + ' ' + FErrorMessage, cRed)  // UTF-8 bytes for ✗ (U+2717)
-  else if FSuccessMessage <> '' then
-    Result := bobastyle.ColorText(#$E2#$9C#$93 + ' ' + FSuccessMessage, cGreen)  // UTF-8 bytes for ✓ (U+2713)
-  else
-    Result := '';
+  Lines := TStringList.Create;
+  try
+    // Show analyzing tags stage
+    if FAnalyzingTagsCompleted or (FProgressStage = psAnalyzingTags) then
+    begin
+      if FAnalyzingTagsCompleted then
+        StatusIcon := AnsiString(bobastyle.ColorText(#$E2#$9C#$93, cGreen))  // ✓ green checkmark
+      else
+        StatusIcon := AnsiString(FSpinner.View);  // Spinning indicator
+      
+      Lines.Add(StatusIcon + AnsiString(' 🔖 Analyzing git tags...'));
+      
+      // Add message if we have one
+      if FAnalyzingTagsMessage <> '' then
+        Lines.Add(AnsiString('   ') + AnsiString(FAnalyzingTagsMessage));
+      
+      // Only show tags in the analyzing tags stage (not in other stages)
+      if FTagsInRange <> '' then
+        Lines.Add(AnsiString('   Tags in range: ') + AnsiString(bobastyle.ColorText(FTagsInRange, cCyan)));
+    end;
+    
+    // Show reading changelog stage
+    if FReadingChangelogCompleted or (FProgressStage = psReadingChangelog) then
+    begin
+      if FReadingChangelogCompleted then
+        StatusIcon := AnsiString(bobastyle.ColorText(#$E2#$9C#$93, cGreen))
+      else
+        StatusIcon := AnsiString(FSpinner.View);
+      
+      Lines.Add(StatusIcon + AnsiString(' 📋 Reading existing changelog...'));
+      
+      if FReadingChangelogMessage <> '' then
+        Lines.Add(AnsiString('   ') + AnsiString(FReadingChangelogMessage));
+    end;
+    
+    // Show analyzing history stage
+    if FAnalyzingHistoryCompleted or (FProgressStage = psAnalyzingHistory) then
+    begin
+      if FAnalyzingHistoryCompleted then
+        StatusIcon := AnsiString(bobastyle.ColorText(#$E2#$9C#$93, cGreen))
+      else
+        StatusIcon := AnsiString(FSpinner.View);
+      
+      Lines.Add(StatusIcon + AnsiString(' 🔍 Analyzing git history...'));
+      
+      if FAnalyzingHistoryMessage <> '' then
+        Lines.Add(AnsiString('   ') + AnsiString(FAnalyzingHistoryMessage));
+    end;
+    
+    // Show generating entries stage
+    if FGeneratingEntriesCompleted or (FProgressStage = psGeneratingEntries) then
+    begin
+      if FGeneratingEntriesCompleted then
+        StatusIcon := AnsiString(bobastyle.ColorText(#$E2#$9C#$93, cGreen))
+      else
+        StatusIcon := AnsiString(FSpinner.View);
+      
+      Lines.Add(StatusIcon + AnsiString(' ✨ Generating changelog entries...'));
+      
+      if FGeneratingEntriesMessage <> '' then
+        Lines.Add(AnsiString('   ') + AnsiString(FGeneratingEntriesMessage));
+    end;
+    
+    // Show writing changelog stage
+    if FWritingChangelogCompleted or (FProgressStage = psWritingChangelog) then
+    begin
+      if FWritingChangelogCompleted then
+        StatusIcon := AnsiString(bobastyle.ColorText(#$E2#$9C#$93, cGreen))
+      else
+        StatusIcon := AnsiString(FSpinner.View);
+      
+      Lines.Add(StatusIcon + AnsiString(' 💾 Writing changelog...'));
+      
+      if FWritingChangelogMessage <> '' then
+        Lines.Add(AnsiString('   ') + AnsiString(FWritingChangelogMessage));
+    end;
+    
+    // Show completion status
+    if FProgressStage = psCompleted then
+    begin
+      Lines.Add(AnsiString(bobastyle.ColorText(#$E2#$9C#$93 + AnsiString(' Changelog has been successfully updated and written to CHANGELOG.md'), cGreen)));
+    end
+    else if FErrorMessage <> '' then
+    begin
+      Lines.Add(AnsiString(bobastyle.ColorText(#$E2#$9C#$97 + AnsiString(' ') + AnsiString(FErrorMessage), cRed)));
+    end;
+    
+    // Debug: Log all lines that will be displayed
+    DebugLog('View() final output has ' + IntToStr(Lines.Count) + ' lines:');
+    for i := 0 to Lines.Count - 1 do
+    begin
+      DebugLog('  Line ' + IntToStr(i) + ': "' + Lines[i] + '"');
+    end;
+    
+    // Build output as single AnsiString
+    Output := AnsiString(Lines.Text);
+    
+    // Remove trailing newline
+    if (Length(Output) > 0) and (Output[Length(Output)] = #10) then
+      Output := Copy(Output, 1, Length(Output) - 1);
+    
+    // Convert to result only at the end
+    Result := string(Output);
+    
+    // Debug: Log the exact final string that gets returned
+    DebugLog('View() returning exact string: "' + Result + '"');
+    DebugLog('View() string length: ' + IntToStr(Length(Result)));
+      
+  finally
+    Lines.Free;
+  end;
 end;
 
 function TChangelogModel.Init: bobaui.TCmd;
@@ -520,6 +772,9 @@ begin
   FState := 'generating';
   FErrorMessage := '';
   FSuccessMessage := '';
+  FProgressStage := psInitializing;
+  FProgressMessage := '';
+  FCompletionSummary := '';
 end;
 
 procedure TChangelogModel.SetSuccess(const Message: string);
@@ -564,6 +819,17 @@ begin
     FCurrentOperation := nil;
   end;
   FAsyncState := osIdle;
+end;
+
+procedure TChangelogModel.SendProgressUpdate(AStage: TProgressStage; const AMessage: string; const ATagsInRange: string);
+var
+  ProgressMsg: TAsyncProgressUpdateMsg;
+begin
+  if Assigned(GProgram) and (FOperationId <> '') then
+  begin
+    ProgressMsg := TAsyncProgressUpdateMsg.Create(FOperationId, AStage, AMessage, ATagsInRange);
+    GProgram.Send(ProgressMsg);
+  end;
 end;
 
 
@@ -865,6 +1131,18 @@ begin
   Result[3].Parameters[1].Required := False;
 end;
 
+// Thread-safe helper for sending progress updates
+procedure SendAsyncProgressUpdate(const AOperationId: string; AStage: TProgressStage; const AMessage: string; const ATagsInRange: string = '');
+var
+  ProgressMsg: TAsyncProgressUpdateMsg;
+begin
+  if Assigned(GProgram) and (AOperationId <> '') then
+  begin
+    ProgressMsg := TAsyncProgressUpdateMsg.Create(AOperationId, AStage, AMessage, ATagsInRange);
+    GProgram.Send(ProgressMsg);
+  end;
+end;
+
 // Thread-safe procedure for changelog generation
 function GenerateChangelogAsync(const RepoPath: string; const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = ''): string;
 var
@@ -970,6 +1248,235 @@ begin
         0.3,    // Low temperature for consistent formatting
         3000    // Higher token limit for detailed changelogs
       );
+      
+      // Process result
+      if Length(Response.Choices) > 0 then
+      begin
+        if Length(Response.Choices[0].Message.Content) > 0 then
+        begin
+          Result := 'SUCCESS:' + Response.Choices[0].Message.Content;
+        end
+        else
+        begin
+          Result := 'Error: No response content received from AI';
+        end;
+      end
+      else
+      begin
+        Result := 'Error: No response received from AI';
+      end;
+      
+    finally
+      Config.Free;
+      Registry.Free;
+    end;
+    
+  except
+    on E: Exception do
+    begin
+      Result := 'Error generating changelog: ' + E.Message;
+    end;
+  end;
+end;
+
+// Progress-aware changelog generation function
+function GenerateChangelogAsyncWithProgress(const RepoPath: string; const OperationId: string; const ProviderOverride: string = ''; const FromTag: string = ''; const ToTag: string = ''): string;
+var
+  Config: TGitPalConfig;
+  Registry: TProviderRegistry;
+  ProviderName: AnsiString;
+  Provider: ILLMProvider;
+  ToolContext: IToolContext;
+  Messages: array of TLLMMessage;
+  Tools: TToolFunctionArray;
+  Response: TLLMChatCompletionResponse;
+  GitResult: git.TGitResult;
+  Tags: TStringList;
+  FilteredTags: TStringList;
+  i: Integer;
+  InRange: Boolean;
+  TagsDisplay: string;
+begin
+  Result := '';
+  
+  try
+    // Send initial progress update
+    SendAsyncProgressUpdate(OperationId, psAnalyzingTags, 'Analyzing git tags...');
+    
+    // Get tags information early to display to user
+    GitResult := git.TGitRepository.GetTags('--sort=-version:refname');
+    if GitResult.Success then
+    begin
+      Tags := TStringList.Create;
+      FilteredTags := TStringList.Create;
+      try
+        Tags.Text := GitResult.Output;
+        TagsDisplay := '';
+        
+        // Filter tags to show what we're working with
+        if (FromTag <> '') and (ToTag <> '') then
+        begin
+          InRange := False;
+          for i := 0 to Tags.Count - 1 do
+          begin
+            if Tags[i] = ToTag then
+              InRange := True;
+            
+            if InRange then
+            begin
+              FilteredTags.Add(Tags[i]);
+              if TagsDisplay <> '' then TagsDisplay := TagsDisplay + ', ';
+              TagsDisplay := TagsDisplay + Tags[i];
+            end;
+              
+            if Tags[i] = FromTag then
+              Break;
+          end;
+        end
+        else if FromTag <> '' then
+        begin
+          for i := 0 to Tags.Count - 1 do
+          begin
+            FilteredTags.Add(Tags[i]);
+            if TagsDisplay <> '' then TagsDisplay := TagsDisplay + ', ';
+            TagsDisplay := TagsDisplay + Tags[i];
+            if Tags[i] = FromTag then
+              Break;
+          end;
+        end
+        else if ToTag <> '' then
+        begin
+          for i := 0 to Tags.Count - 1 do
+          begin
+            if Tags[i] = ToTag then
+            begin
+              FilteredTags.Add(Tags[i]);
+              if TagsDisplay <> '' then TagsDisplay := TagsDisplay + ', ';
+              TagsDisplay := TagsDisplay + Tags[i];
+              Break;
+            end;
+            FilteredTags.Add(Tags[i]);
+            if TagsDisplay <> '' then TagsDisplay := TagsDisplay + ', ';
+            TagsDisplay := TagsDisplay + Tags[i];
+          end;
+        end
+        else
+        begin
+          // Show first 5 tags
+          for i := 0 to Min(4, Tags.Count - 1) do
+          begin
+            FilteredTags.Add(Tags[i]);
+            if TagsDisplay <> '' then TagsDisplay := TagsDisplay + ', ';
+            TagsDisplay := TagsDisplay + Tags[i];
+          end;
+        end;
+        
+        // Send progress update with tags
+        DebugLog('Sending tags to UI: ' + TagsDisplay);
+        SendAsyncProgressUpdate(OperationId, psAnalyzingTags, 'Found ' + IntToStr(FilteredTags.Count) + ' tags to process', TagsDisplay);
+        
+      finally
+        Tags.Free;
+        FilteredTags.Free;
+      end;
+    end;
+    
+    // Load configuration
+    SendAsyncProgressUpdate(OperationId, psReadingChangelog, 'Loading configuration...');
+    Config := TGitPalConfig.Create;
+    Registry := TProviderRegistry.Create;
+    try
+      if not Config.LoadConfig then
+      begin
+        Result := 'Error: No configuration found. Please run "gitpal setup" first.';
+        Exit;
+      end;
+      
+      // Determine which provider to use
+      if ProviderOverride <> '' then
+        ProviderName := AnsiString(ProviderOverride)
+      else
+        ProviderName := Config.DefaultProvider;
+      
+      if ProviderName = '' then
+      begin
+        Result := 'Error: No provider specified and no default provider configured.';
+        Exit;
+      end;
+      
+      // Create provider from config
+      try
+        Provider := Registry.CreateProviderFromConfig(Config, ProviderName);
+      except
+        on E: Exception do
+        begin
+          Result := 'Error: ' + E.Message;
+          Exit;
+        end;
+      end;
+      
+      // Check if provider supports tool calling
+      if not Provider.SupportsToolCalling then
+      begin
+        Result := 'Error: Provider "' + string(ProviderName) + '" does not support tool calling.';
+        Exit;
+      end;
+      
+      // Create tool context (validates git repository)
+      SendAsyncProgressUpdate(OperationId, psReadingChangelog, '');
+      try
+        ToolContext := TGitPalToolContext.Create(RepoPath, FromTag, ToTag);
+      except
+        on E: Exception do
+        begin
+          Result := 'Error: ' + E.Message + '. Please run this command from within a git repository.';
+          Exit;
+        end;
+      end;
+      
+      // Setup conversation
+      SendAsyncProgressUpdate(OperationId, psGeneratingEntries, '');
+      SetLength(Messages, 1);
+      
+      Messages[0].Role := lmrUser;
+      Messages[0].Content := AnsiString('You are an expert software developer and changelog maintainer. ') +
+                             AnsiString('Your task is to analyze a git repository and update its CHANGELOG.md file. ') +
+                             AnsiString('Follow these guidelines:') + #10 +
+                             AnsiString('- Use Keep-a-Changelog format (https://keepachangelog.com/)') + #10 +
+                             AnsiString('- Group changes by type: Added, Changed, Deprecated, Removed, Fixed, Security') + #10 +
+                             AnsiString('- Write clear, user-focused descriptions') + #10 +
+                             AnsiString('- Include version numbers and dates') + #10 +
+                             AnsiString('- Only add entries for versions that are missing from the changelog') + #10 +
+                             AnsiString('- Preserve existing changelog content and format') + #10 +
+                             AnsiString('- If no CHANGELOG.md exists, create one with proper header and format') + #10 + #10 +
+                             AnsiString('Please update my CHANGELOG.md file by analyzing my git tags and adding entries for any missing versions. ') +
+                             AnsiString('You have these tools available:') + #10 +
+                             AnsiString('- get_git_tags: Get all git tags') + #10 +
+                             AnsiString('- get_commits_between: Get commits between two tags/refs') + #10 +
+                             AnsiString('- read_changelog: Read existing CHANGELOG.md') + #10 +
+                             AnsiString('- write_changelog: Write updated CHANGELOG.md') + #10 + #10 +
+                             AnsiString('Please start by calling the get_git_tags function to see what versions exist. ') +
+                             AnsiString('Note: The tags returned may be limited to a specific range or the most recent versions. ') +
+                             AnsiString('After that, call read_changelog to see the current content. ') + 
+                             AnsiString('Then analyze what''s needed and use the other tools as necessary. ') + #10 + #10 +
+                             AnsiString('IMPORTANT: Please call only ONE function at a time and wait for the result before calling the next function. ') +
+                             AnsiString('Focus on creating meaningful, user-readable changelog entries rather than just listing commit messages.');
+      
+      // Get available tools and execute conversation
+      Tools := ToolContext.GetAvailableTools;
+      
+      // Execute tool-calling conversation using configured model
+      Response := Provider.ChatCompletionWithTools(
+        Provider.GetDefaultModel,
+        Messages,
+        Tools,
+        ToolContext,
+        0.3,    // Low temperature for consistent formatting
+        3000    // Higher token limit for detailed changelogs
+      );
+      
+      // Send final progress update
+      SendAsyncProgressUpdate(OperationId, psWritingChangelog, '');
       
       // Process result
       if Length(Response.Choices) > 0 then
