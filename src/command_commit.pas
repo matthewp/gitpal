@@ -920,7 +920,7 @@ begin
   begin
     KeyMsg := bobaui.TKeyMsg(Msg);
     
-    // Handle 'q' to quit
+    // Handle 'q' to quit manually
     if (KeyMsg.Key = 'q') or (KeyMsg.Key = 'Q') then
     begin
       CancelCurrentOperation; // Cancel any running operation
@@ -933,11 +933,6 @@ begin
       begin
         Result.Cmd := TEditCommitMessageCommand.Create(FCommitMessage);
       end;
-    end
-    // If commit was executed, any key should quit
-    else if FCommitExecuted then
-    begin
-      Result.Cmd := bobaui.QuitCmd;
     end
     else if FAsyncState = osIdle then  // Only handle list navigation if not busy
     begin
@@ -974,7 +969,7 @@ begin
     // Handle selection
     if ListSelectionMsg.SelectedIndex = 0 then
     begin
-      // Accept: Execute git commit and update state
+      // Accept: Execute git commit and quit automatically
       GitResult := git.TGitRepository.Commit(FCommitMessage);
       FCommitSuccessful := GitResult.Success;
       if not GitResult.Success then
@@ -982,7 +977,8 @@ begin
       else
         FCommitErrorMessage := AnsiString('');
       FCommitExecuted := True;
-      // Don't quit immediately, let the view show the result first
+      // Quit automatically after showing result
+      Result.Cmd := bobaui.QuitCmd;
     end
     else
     begin
