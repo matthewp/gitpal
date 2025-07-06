@@ -283,7 +283,7 @@ If the edit feature doesn't work:
 
 ## Contributing
 
-gitpal is developed on [SourceHut](https://sr.ht/~matthewp/gitpal/) using mailing lists for collaboration.
+gitpal is developed on [sourcehut](https://sr.ht/~matthewp/gitpal/) using mailing lists for collaboration.
 
 ### Mailing Lists
 
