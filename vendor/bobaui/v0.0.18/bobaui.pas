@@ -577,6 +577,7 @@ type
     FMessageQueue: TMessageQueue;
     FInputThread: TInputThread;
     FTimerThread: TTimerThread;
+    FQuitAfterRender: boolean;
     {$IFDEF UNIX}
     FOriginalSigWinchHandler: PSigActionRec;
     {$ENDIF}
@@ -2612,6 +2613,7 @@ begin
   FModel := AModel;
   FDisplay := ADisplay;
   FRunning := true;
+  FQuitAfterRender := false;
   FMessageQueue := TMessageQueue.Create;
   FInputThread := TInputThread.Create(FMessageQueue, FDisplay);
   FTimerThread := TTimerThread.Create(FMessageQueue);
@@ -2628,6 +2630,7 @@ begin
   FModel := AModel;
   FDisplay := TAnsiDisplay.Create(ADisplayMode);
   FRunning := true;
+  FQuitAfterRender := false;
   FMessageQueue := TMessageQueue.Create;
   FInputThread := TInputThread.Create(FMessageQueue, FDisplay);
   FTimerThread := TTimerThread.Create(FMessageQueue);
@@ -3127,7 +3130,8 @@ begin
           begin
             if CmdMsg is TQuitMsg then
             begin
-              Quit;
+              // Don't quit immediately - set flag to quit after rendering
+              FQuitAfterRender := True;
               CmdMsg.Free;
             end
             else if CmdMsg is TInterruptMsg then
@@ -3168,7 +3172,8 @@ begin
                     // Handle the sub-command message immediately instead of queuing
                     if BatchCmdMsg is TQuitMsg then
                     begin
-                      Quit;
+                      // Don't quit immediately - set flag to quit after rendering
+                      FQuitAfterRender := True;
                       BatchCmdMsg.Free;
                     end
                     else if BatchCmdMsg is TInterruptMsg then
@@ -3230,6 +3235,12 @@ begin
             if TAnsiDisplay(FDisplay).GetDisplayMode = dmFullScreen then
               FDisplay.MoveCursor(1, FDisplay.GetHeight);
           end;
+        end;
+        
+        // Check if we should quit after rendering
+        if FQuitAfterRender then
+        begin
+          Quit;
         end;
       end
       else

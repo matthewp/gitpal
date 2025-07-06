@@ -420,22 +420,26 @@ begin
       
       if AsyncChangelogMsg.Success then
       begin
-        // Success - display result
+        // Success - display result and quit automatically
         if Pos('SUCCESS:', AsyncChangelogMsg.Result) = 1 then
         begin
           SetSuccess('Changelog generated successfully');
-          // In a real implementation, you might want to show the result content
-          // For now, we'll just show success
+          Result.Cmd := bobaui.QuitCmd;
+          Exit;
         end
         else
         begin
           SetError(AsyncChangelogMsg.Result);
+          Result.Cmd := bobaui.QuitCmd;
+          Exit;
         end;
       end
       else
       begin
-        // Error - show error message
+        // Error - show error message and quit automatically
         SetError(AsyncChangelogMsg.ErrorMessage);
+        Result.Cmd := bobaui.QuitCmd;
+        Exit;
       end;
     end;
     Exit; // Don't process other messages this cycle
@@ -454,15 +458,10 @@ begin
   begin
     KeyMsg := bobaui.TKeyMsg(Msg);
     
-    // Handle 'q' to quit
+    // Handle 'q' to quit manually
     if (KeyMsg.Key = 'q') or (KeyMsg.Key = 'Q') then
     begin
       CancelCurrentOperation; // Cancel any running operation
-      Result.Cmd := bobaui.QuitCmd;
-    end
-    // If generation is complete (success or error), any key should quit
-    else if (FState = 'success') or (FState = 'error') then
-    begin
       Result.Cmd := bobaui.QuitCmd;
     end;
   end
