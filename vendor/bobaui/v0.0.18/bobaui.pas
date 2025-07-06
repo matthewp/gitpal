@@ -4,7 +4,7 @@ unit bobaui;
 {$codepage UTF8}
 {$H+}
 
-{$DEFINE BOBAUI_DEBUG} // Enable debug logging
+// {$DEFINE BOBAUI_DEBUG} // Enable debug logging
 
 interface
 
