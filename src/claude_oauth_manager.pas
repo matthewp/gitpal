@@ -2,23 +2,24 @@
 {$codepage UTF8}
 {$H+}
 
-unit claude_oauth_provider;
+unit claude_oauth_manager;
 
 interface
 
 uses
   SysUtils, Classes, DateUtils, models,
   claude_oauth_client, browser_launch,
-  oauth_client, claude_oauth_adapter, logging, config_manager;
+  oauth_client, logging, config_manager,
+  claude_oauth_provider;
 
 type
-  TClaudeOAuthProvider = class(TInterfacedObject, ILLMProvider)
+  TClaudeOAuthManager = class(TInterfacedObject, ILLMProvider)
   private
     FOAuthClient: TClaudeOAuthClient;
     FConfig: TGitPalConfig;
     FCurrentTokens: TOAuthTokens;
     FTokensLoaded: Boolean;
-    FClaudeProvider: TClaudeOAuthAdapter;
+    FClaudeProvider: claude_oauth_provider.TClaudeOAuthProvider;
     
     function LoadStoredTokens: Boolean;
     function RefreshTokensIfNeeded: Boolean;
@@ -55,7 +56,7 @@ const
 
 implementation
 
-constructor TClaudeOAuthProvider.Create;
+constructor TClaudeOAuthManager.Create;
 begin
   inherited Create;
   DebugLog('TClaudeOAuthProvider.Create: Starting constructor');
@@ -82,7 +83,7 @@ begin
   DebugLog('TClaudeOAuthProvider.Create: Constructor completed');
 end;
 
-destructor TClaudeOAuthProvider.Destroy;
+destructor TClaudeOAuthManager.Destroy;
 begin
   if Assigned(FClaudeProvider) then
     FClaudeProvider.Free;
@@ -93,7 +94,7 @@ begin
   inherited Destroy;
 end;
 
-function TClaudeOAuthProvider.LoadStoredTokens: Boolean;
+function TClaudeOAuthManager.LoadStoredTokens: Boolean;
 var
   ClaudeConfig: TProviderConfig;
 begin
@@ -138,7 +139,7 @@ begin
   end;
 end;
 
-function TClaudeOAuthProvider.RefreshTokensIfNeeded: Boolean;
+function TClaudeOAuthManager.RefreshTokensIfNeeded: Boolean;
 var
   CurrentTime: Int64;
   BufferTime: Int64;
@@ -210,7 +211,7 @@ begin
   end;
 end;
 
-function TClaudeOAuthProvider.PerformOAuthFlow: Boolean;
+function TClaudeOAuthManager.PerformOAuthFlow: Boolean;
 var
   State: AnsiString;
   AuthURL: AnsiString;
@@ -284,7 +285,7 @@ begin
     end;
 end;
 
-function TClaudeOAuthProvider.Authenticate: Boolean;
+function TClaudeOAuthManager.Authenticate: Boolean;
 begin
   DebugLog('TClaudeOAuthProvider.Authenticate: Starting authentication');
   
@@ -315,7 +316,7 @@ begin
   Result := PerformOAuthFlow;
 end;
 
-function TClaudeOAuthProvider.AuthenticateForce: Boolean;
+function TClaudeOAuthManager.AuthenticateForce: Boolean;
 begin
   DebugLog('TClaudeOAuthProvider.AuthenticateForce: Starting forced authentication (ignoring existing tokens)');
   
@@ -334,14 +335,14 @@ begin
   Result := PerformOAuthFlow;
 end;
 
-function TClaudeOAuthProvider.IsAuthenticated: Boolean;
+function TClaudeOAuthManager.IsAuthenticated: Boolean;
 begin
   DebugLog('TClaudeOAuthProvider.IsAuthenticated: Checking authentication status');
   Result := LoadStoredTokens and RefreshTokensIfNeeded;
   DebugLog('TClaudeOAuthProvider.IsAuthenticated: Result = ' + BoolToStr(Result, True));
 end;
 
-function TClaudeOAuthProvider.GetCurrentAccessToken: AnsiString;
+function TClaudeOAuthManager.GetCurrentAccessToken: AnsiString;
 begin
   DebugLog('TClaudeOAuthProvider.GetCurrentAccessToken: Starting');
   if IsAuthenticated then
@@ -356,12 +357,12 @@ begin
   end;
 end;
 
-function TClaudeOAuthProvider.GetCurrentTokens: TOAuthTokens;
+function TClaudeOAuthManager.GetCurrentTokens: TOAuthTokens;
 begin
   Result := FCurrentTokens;
 end;
 
-function TClaudeOAuthProvider.Logout: Boolean;
+function TClaudeOAuthManager.Logout: Boolean;
 var
   ClaudeConfig: TProviderConfig;
 begin
@@ -411,7 +412,7 @@ begin
   end;
 end;
 
-procedure TClaudeOAuthProvider.EnsureClaudeProvider;
+procedure TClaudeOAuthManager.EnsureClaudeProvider;
 var
   AccessToken: AnsiString;
 begin
@@ -439,60 +440,248 @@ begin
     FClaudeProvider.Free;
   end;
   
-  DebugLog('EnsureClaudeProvider: Creating new TClaudeProvider with access token');
-  FClaudeProvider := TClaudeOAuthAdapter.Create(AccessToken);
+  DebugLog('EnsureClaudeProvider: Creating new TClaudeOAuthProvider with access token');
+  FClaudeProvider := claude_oauth_provider.TClaudeOAuthProvider.Create(string(AccessToken), 'You are Claude Code, Anthropic''s official CLI for Claude.');
   DebugLog('EnsureClaudeProvider: Claude provider created successfully');
 end;
 
 // Implement ILLMProvider interface by delegating to Claude provider
 
-function TClaudeOAuthProvider.ChatCompletion(const AModel: string; const AMessages: array of TLLMMessage; 
+function TClaudeOAuthManager.ChatCompletion(const AModel: string; const AMessages: array of TLLMMessage; 
   ATemperature: Double = 0.7; AMaxTokens: Integer = 2048): TLLMChatCompletionResponse;
+var
+  ModifiedMessages: array of TLLMMessage;
+  SystemMessageContent: string;
+  I, J: Integer;
 begin
+  DebugLog('TClaudeOAuthManager.ChatCompletion: Starting');
+  DebugLog('TClaudeOAuthManager.ChatCompletion: Model = ' + AModel);
+  DebugLog('TClaudeOAuthManager.ChatCompletion: Messages count = ' + IntToStr(Length(AMessages)));
+  
+  // Transform messages like the old adapter did:
+  // 1. Extract system message content and convert to first user message
+  // 2. Skip system messages, add other messages after
+  
+  SystemMessageContent := '';
+  
+  // Find system message content
+  for I := Low(AMessages) to High(AMessages) do
+  begin
+    if AMessages[I].Role = lmrSystem then
+    begin
+      SystemMessageContent := AMessages[I].Content;
+      Break;
+    end;
+  end;
+  
+  // Build new message array with instructions as first user message
+  J := 0;
+  if SystemMessageContent <> '' then
+  begin
+    SetLength(ModifiedMessages, Length(AMessages)); // Start with same size, may shrink
+    
+    // Add commit instructions as first user message
+    ModifiedMessages[J].Role := lmrUser;
+    ModifiedMessages[J].Content := SystemMessageContent;
+    ModifiedMessages[J].Name := '';
+    ModifiedMessages[J].ToolCallId := '';
+    ModifiedMessages[J].FunctionName := '';
+    SetLength(ModifiedMessages[J].ToolCalls, 0);
+    Inc(J);
+    
+    // Add all non-system messages
+    for I := Low(AMessages) to High(AMessages) do
+    begin
+      if AMessages[I].Role <> lmrSystem then
+      begin
+        ModifiedMessages[J] := AMessages[I];
+        Inc(J);
+      end;
+    end;
+    
+    // Resize array to actual size
+    SetLength(ModifiedMessages, J);
+  end
+  else
+  begin
+    // No system message, just copy all messages
+    SetLength(ModifiedMessages, Length(AMessages));
+    for I := Low(AMessages) to High(AMessages) do
+      ModifiedMessages[I] := AMessages[I];
+  end;
+  
+  DebugLog('TClaudeOAuthManager.ChatCompletion: Modified messages count = ' + IntToStr(Length(ModifiedMessages)));
+  
   EnsureClaudeProvider;
-  Result := FClaudeProvider.ChatCompletion(AModel, AMessages, ATemperature, AMaxTokens);
+  Result := FClaudeProvider.ChatCompletion(AModel, ModifiedMessages, ATemperature, AMaxTokens);
+  
+  if Length(Result.Choices) > 0 then
+  begin
+    DebugLog('TClaudeOAuthManager.ChatCompletion: Response length = ' + IntToStr(Length(Result.Choices[0].Message.Content)));
+    DebugLog('TClaudeOAuthManager.ChatCompletion: Response preview = ' + Copy(Result.Choices[0].Message.Content, 1, 200));
+  end;
 end;
 
-procedure TClaudeOAuthProvider.ChatCompletionStream(const AModel: string; const AMessages: array of TLLMMessage; 
+procedure TClaudeOAuthManager.ChatCompletionStream(const AModel: string; const AMessages: array of TLLMMessage; 
   ACallback: TLLMStreamCallback; ATemperature: Double = 0.7; AMaxTokens: Integer = 2048);
+var
+  ModifiedMessages: array of TLLMMessage;
+  SystemMessageContent: string;
+  I, J: Integer;
 begin
-  DebugLog('TClaudeOAuthProvider.ChatCompletionStream: Starting');
-  DebugLog('TClaudeOAuthProvider.ChatCompletionStream: Model = ' + AModel);
-  DebugLog('TClaudeOAuthProvider.ChatCompletionStream: Messages count = ' + IntToStr(Length(AMessages)));
+  DebugLog('TClaudeOAuthManager.ChatCompletionStream: Starting');
+  DebugLog('TClaudeOAuthManager.ChatCompletionStream: Model = ' + AModel);
+  DebugLog('TClaudeOAuthManager.ChatCompletionStream: Messages count = ' + IntToStr(Length(AMessages)));
+  
+  // Transform messages like the old adapter did:
+  // 1. Extract system message content and convert to first user message
+  // 2. Skip system messages, add other messages after
+  
+  SystemMessageContent := '';
+  
+  // Find system message content
+  for I := Low(AMessages) to High(AMessages) do
+  begin
+    if AMessages[I].Role = lmrSystem then
+    begin
+      SystemMessageContent := AMessages[I].Content;
+      Break;
+    end;
+  end;
+  
+  // Build new message array with instructions as first user message
+  J := 0;
+  if SystemMessageContent <> '' then
+  begin
+    SetLength(ModifiedMessages, Length(AMessages)); // Start with same size, may shrink
+    
+    // Add commit instructions as first user message
+    ModifiedMessages[J].Role := lmrUser;
+    ModifiedMessages[J].Content := SystemMessageContent;
+    ModifiedMessages[J].Name := '';
+    ModifiedMessages[J].ToolCallId := '';
+    ModifiedMessages[J].FunctionName := '';
+    SetLength(ModifiedMessages[J].ToolCalls, 0);
+    Inc(J);
+    
+    // Add all non-system messages
+    for I := Low(AMessages) to High(AMessages) do
+    begin
+      if AMessages[I].Role <> lmrSystem then
+      begin
+        ModifiedMessages[J] := AMessages[I];
+        Inc(J);
+      end;
+    end;
+    
+    // Resize array to actual size
+    SetLength(ModifiedMessages, J);
+  end
+  else
+  begin
+    // No system message, just copy all messages
+    SetLength(ModifiedMessages, Length(AMessages));
+    for I := Low(AMessages) to High(AMessages) do
+      ModifiedMessages[I] := AMessages[I];
+  end;
+  
+  DebugLog('TClaudeOAuthManager.ChatCompletionStream: Modified messages count = ' + IntToStr(Length(ModifiedMessages)));
   
   try
     EnsureClaudeProvider;
-    DebugLog('TClaudeOAuthProvider.ChatCompletionStream: Delegating to FClaudeProvider');
-    FClaudeProvider.ChatCompletionStream(AModel, AMessages, ACallback, ATemperature, AMaxTokens);
-    DebugLog('TClaudeOAuthProvider.ChatCompletionStream: Delegation completed');
+    DebugLog('TClaudeOAuthManager.ChatCompletionStream: Delegating to FClaudeProvider');
+    FClaudeProvider.ChatCompletionStream(AModel, ModifiedMessages, ACallback, ATemperature, AMaxTokens);
+    DebugLog('TClaudeOAuthManager.ChatCompletionStream: Delegation completed');
   except
     on E: Exception do
     begin
-      DebugLog('TClaudeOAuthProvider.ChatCompletionStream: Exception: ' + E.Message);
+      DebugLog('TClaudeOAuthManager.ChatCompletionStream: Exception: ' + E.Message);
       raise;
     end;
   end;
 end;
 
-function TClaudeOAuthProvider.GetProviderName: string;
+function TClaudeOAuthManager.GetProviderName: string;
 begin
   Result := 'claude-oauth';
 end;
 
-function TClaudeOAuthProvider.GetDefaultModel: string;
+function TClaudeOAuthManager.GetDefaultModel: string;
 begin
   Result := 'claude-3-5-sonnet-latest';
 end;
 
-function TClaudeOAuthProvider.ChatCompletionWithTools(const AModel: string; const AMessages: array of TLLMMessage;
+function TClaudeOAuthManager.ChatCompletionWithTools(const AModel: string; const AMessages: array of TLLMMessage;
   const ATools: array of TToolFunction; AToolContext: IToolContext;
   ATemperature: Double = 0.7; AMaxTokens: Integer = 2048): TLLMChatCompletionResponse;
+var
+  ModifiedMessages: array of TLLMMessage;
+  SystemMessageContent: string;
+  I, J: Integer;
 begin
+  DebugLog('TClaudeOAuthManager.ChatCompletionWithTools: Starting');
+  DebugLog('TClaudeOAuthManager.ChatCompletionWithTools: Model = ' + AModel);
+  DebugLog('TClaudeOAuthManager.ChatCompletionWithTools: Messages count = ' + IntToStr(Length(AMessages)));
+  
+  // Transform messages like the old adapter did:
+  // 1. Extract system message content and convert to first user message
+  // 2. Skip system messages, add other messages after
+  
+  SystemMessageContent := '';
+  
+  // Find system message content
+  for I := Low(AMessages) to High(AMessages) do
+  begin
+    if AMessages[I].Role = lmrSystem then
+    begin
+      SystemMessageContent := AMessages[I].Content;
+      Break;
+    end;
+  end;
+  
+  // Build new message array with instructions as first user message
+  J := 0;
+  if SystemMessageContent <> '' then
+  begin
+    SetLength(ModifiedMessages, Length(AMessages)); // Start with same size, may shrink
+    
+    // Add commit instructions as first user message
+    ModifiedMessages[J].Role := lmrUser;
+    ModifiedMessages[J].Content := SystemMessageContent;
+    ModifiedMessages[J].Name := '';
+    ModifiedMessages[J].ToolCallId := '';
+    ModifiedMessages[J].FunctionName := '';
+    SetLength(ModifiedMessages[J].ToolCalls, 0);
+    Inc(J);
+    
+    // Add all non-system messages
+    for I := Low(AMessages) to High(AMessages) do
+    begin
+      if AMessages[I].Role <> lmrSystem then
+      begin
+        ModifiedMessages[J] := AMessages[I];
+        Inc(J);
+      end;
+    end;
+    
+    // Resize array to actual size
+    SetLength(ModifiedMessages, J);
+  end
+  else
+  begin
+    // No system message, just copy all messages
+    SetLength(ModifiedMessages, Length(AMessages));
+    for I := Low(AMessages) to High(AMessages) do
+      ModifiedMessages[I] := AMessages[I];
+  end;
+  
+  DebugLog('TClaudeOAuthManager.ChatCompletionWithTools: Modified messages count = ' + IntToStr(Length(ModifiedMessages)));
+  
   EnsureClaudeProvider;
-  Result := FClaudeProvider.ChatCompletionWithTools(AModel, AMessages, ATools, AToolContext, ATemperature, AMaxTokens);
+  Result := FClaudeProvider.ChatCompletionWithTools(AModel, ModifiedMessages, ATools, AToolContext, ATemperature, AMaxTokens);
 end;
 
-function TClaudeOAuthProvider.SupportsToolCalling: Boolean;
+function TClaudeOAuthManager.SupportsToolCalling: Boolean;
 begin
   Result := True; // Claude supports tool calling
 end;

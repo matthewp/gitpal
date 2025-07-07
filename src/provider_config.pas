@@ -8,7 +8,7 @@ interface
 
 uses
   SysUtils, Classes, models, openai_provider, claude_provider, gemini_provider, 
-  claude_oauth_provider, config_manager;
+  claude_oauth_manager, config_manager;
 
 type
   TProviderInfo = record
@@ -218,7 +218,7 @@ begin
   // Handle Claude OAuth case specially
   if (ProviderName = PROVIDER_CLAUDE) and (ProviderConfig.AuthMethod = amOAuth) then
   begin
-    Result := TClaudeOAuthProvider.Create;
+    Result := TClaudeOAuthManager.Create;
     Exit;
   end;
   

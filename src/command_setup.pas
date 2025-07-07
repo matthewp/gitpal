@@ -14,7 +14,7 @@ uses
   Classes,
   config_manager,
   provider_config,
-  claude_oauth_provider,
+  claude_oauth_manager,
   oauth_client,
   logging;
 
@@ -228,12 +228,12 @@ end;
 
 procedure TSetupModel.PerformOAuthAuthentication;
 var
-  OAuthProvider: TClaudeOAuthProvider;
+  OAuthProvider: TClaudeOAuthManager;
 begin
   DebugLog('Starting OAuth authentication...');
   try
-    DebugLog('Creating TClaudeOAuthProvider...');
-    OAuthProvider := TClaudeOAuthProvider.Create;
+    DebugLog('Creating TClaudeOAuthManager...');
+    OAuthProvider := TClaudeOAuthManager.Create;
     try
       DebugLog('Calling OAuthProvider.AuthenticateForce...');
       if OAuthProvider.AuthenticateForce then

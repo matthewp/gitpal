@@ -13,8 +13,8 @@ set(FPC_FLAGS
 set(VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
 list(APPEND FPC_FLAGS
     "-Fu${VENDOR_DIR}/bobaui/v0.0.19"  # Path for bobaui units
-    "-Fu${VENDOR_DIR}/models.pas/v0.0.3"  # Path for models units  
-    "-Fi${VENDOR_DIR}/models.pas/v0.0.3"  # Include path for models units
+    "-Fu${VENDOR_DIR}/models.pas/v0.0.5"  # Path for models units  
+    "-Fi${VENDOR_DIR}/models.pas/v0.0.5"  # Include path for models units
     "-Fu${CMAKE_CURRENT_SOURCE_DIR}/src"  # Source directory
 )
 
@@ -62,8 +62,7 @@ set(GITPAL_SOURCES
     src/provider_config.pas
     src/logging.pas
     src/claude_oauth_client.pas
-    src/claude_oauth_provider.pas
-    src/claude_oauth_adapter.pas
+    src/claude_oauth_manager.pas
     # Add other source dependencies here as needed
 )
 

@@ -235,25 +235,15 @@ function TGeminiProvider.ParseChatCompletionResponse(const AJsonString: string):
 var
   LJsonData: TJSONData;
   LJsonObject: TJSONObject;
-  LCandidatesArray: TJSONArray;
-  LIndex, LPartIndex: Integer;
-  LCandidateObj, LContentObj, LPartObj, LUsageObj: TJSONObject;
-  LCandidatesData, LUsageData: TJSONData;
+  LChoicesArray: TJSONArray;
+  LIndex: Integer;
+  LChoiceObj, LMessageObj, LUsageObj: TJSONObject;
+  LChoicesData, LUsageData: TJSONData;
   LErrorData: TJSONData;
   LErrorObj: TJSONObject;
-  LPartsArray: TJSONArray;
-  LFunctionCallsCount: Integer;
-  LToolCallsArray: TToolCallArray;
-  LFunctionCallObj: TJSONObject;
-  LArgsObj: TJSONObject;
-  LTextContent: string;
 begin
   
-  // Initialize all fields properly
-  Result.ID := AnsiString('gemini-' + IntToStr(Random(999999)));
-  Result.ObjectStr := AnsiString('chat.completion');
-  Result.Created := DateTimeToUnix(Now);
-  Result.Model := AnsiString('gemini');
+  // Initialize all fields properly - use values from actual response
   SetLength(Result.Choices, 0);
   Result.Usage.PromptTokens := 0;
   Result.Usage.CompletionTokens := 0;
@@ -279,150 +269,97 @@ begin
         raise Exception.Create('Gemini API Error: ' + LErrorData.AsString);
     end;
 
-    // Parse Gemini response format (uses 'candidates' not 'choices')
-    LCandidatesData := LJsonObject.Find('candidates');
-    if (LCandidatesData <> nil) and (LCandidatesData is TJSONArray) then
-    begin
-      LCandidatesArray := TJSONArray(LCandidatesData);
-      SetLength(Result.Choices, LCandidatesArray.Count);
+    // Parse response metadata from OpenAI format
+    if LJsonObject.Find('id') <> nil then
+      Result.ID := LJsonObject.Strings['id']
+    else
+      Result.ID := AnsiString('gemini-' + IntToStr(Random(999999)));
       
-      for LIndex := 0 to LCandidatesArray.Count - 1 do
+    if LJsonObject.Find('object') <> nil then
+      Result.ObjectStr := LJsonObject.Strings['object']
+    else
+      Result.ObjectStr := AnsiString('chat.completion');
+      
+    if LJsonObject.Find('created') <> nil then
+      Result.Created := LJsonObject.Integers['created']
+    else
+      Result.Created := DateTimeToUnix(Now);
+      
+    if LJsonObject.Find('model') <> nil then
+      Result.Model := LJsonObject.Strings['model']
+    else
+      Result.Model := AnsiString('gemini');
+
+    // Parse OpenAI response format (uses 'choices' not 'candidates')
+    LChoicesData := LJsonObject.Find('choices');
+    if (LChoicesData <> nil) and (LChoicesData is TJSONArray) then
+    begin
+      LChoicesArray := TJSONArray(LChoicesData);
+      SetLength(Result.Choices, LChoicesArray.Count);
+      
+      for LIndex := 0 to LChoicesArray.Count - 1 do
       begin
-        if (LCandidatesArray.Items[LIndex] is TJSONObject) then
+        if (LChoicesArray.Items[LIndex] is TJSONObject) then
         begin
-          LCandidateObj := TJSONObject(LCandidatesArray.Items[LIndex]);
-          Result.Choices[LIndex].Index := LIndex;
+          LChoiceObj := TJSONObject(LChoicesArray.Items[LIndex]);
           
-          // Get finish reason if available
-          if LCandidateObj.Find('finishReason') <> nil then
-            Result.Choices[LIndex].FinishReason := LCandidateObj.Strings['finishReason']
+          // Get index
+          if LChoiceObj.Find('index') <> nil then
+            Result.Choices[LIndex].Index := LChoiceObj.Integers['index']
+          else
+            Result.Choices[LIndex].Index := LIndex;
+          
+          // Get finish reason
+          if LChoiceObj.Find('finish_reason') <> nil then
+            Result.Choices[LIndex].FinishReason := LChoiceObj.Strings['finish_reason']
           else
             Result.Choices[LIndex].FinishReason := AnsiString('stop');
 
-          // Parse content object safely
-          LContentObj := nil;
-          if LCandidateObj.Find('content') <> nil then
+          // Parse message object
+          LMessageObj := nil;
+          if LChoiceObj.Find('message') <> nil then
           begin
-            if LCandidateObj.Find('content') is TJSONObject then
-              LContentObj := LCandidateObj.Objects['content'];
+            if LChoiceObj.Find('message') is TJSONObject then
+              LMessageObj := LChoiceObj.Objects['message'];
           end;
           
-          if LContentObj <> nil then
+          if LMessageObj <> nil then
           begin
-            Result.Choices[LIndex].Message.Role := lmrAssistant;
+            // Get role
+            if LMessageObj.Find('role') <> nil then
+              Result.Choices[LIndex].Message.Role := StringToMessageRole(LMessageObj.Strings['role'])
+            else
+              Result.Choices[LIndex].Message.Role := lmrAssistant;
+              
+            // Get content
+            if LMessageObj.Find('content') <> nil then
+              Result.Choices[LIndex].Message.Content := LMessageObj.Strings['content']
+            else
+              Result.Choices[LIndex].Message.Content := AnsiString('');
+              
+            // Initialize other message fields
             Result.Choices[LIndex].Message.Name := AnsiString('');
             Result.Choices[LIndex].Message.ToolCallId := AnsiString('');
+            Result.Choices[LIndex].Message.FunctionName := AnsiString('');
+            SetLength(Result.Choices[LIndex].Message.ToolCalls, 0);
             
-            // Parse parts array for text content and function calls
-            // Handle both array and non-array cases for 'parts' field
-            LPartsArray := nil;
-            if LContentObj.Find('parts') <> nil then
-            begin
-              if LContentObj.Find('parts') is TJSONArray then
-                LPartsArray := LContentObj.Arrays['parts'];
-            end;
-            
-            if LPartsArray <> nil then
-            begin
-              LTextContent := AnsiString('');
-              LFunctionCallsCount := 0;
-              SetLength(LToolCallsArray, 0);
-              
-              // First pass: count function calls and collect text
-              for LPartIndex := 0 to LPartsArray.Count - 1 do
-              begin
-                if LPartsArray.Items[LPartIndex] is TJSONObject then
-                begin
-                  LPartObj := TJSONObject(LPartsArray.Items[LPartIndex]);
-                  
-                  // Check for text content
-                  if LPartObj.Find('text') <> nil then
-                  begin
-                    if LTextContent <> AnsiString('') then
-                      LTextContent := LTextContent + ' ';
-                    LTextContent := LTextContent + LPartObj.Strings['text'];
-                  end;
-                  
-                  // Check for function call
-                  if LPartObj.Find('functionCall') <> nil then
-                    Inc(LFunctionCallsCount);
-                end;
-              end;
-              
-              Result.Choices[LIndex].Message.Content := LTextContent;
-              
-              // Second pass: extract function calls
-              if LFunctionCallsCount > 0 then
-              begin
-                SetLength(LToolCallsArray, LFunctionCallsCount);
-                LFunctionCallsCount := 0; // Reset for indexing
-                
-                for LPartIndex := 0 to LPartsArray.Count - 1 do
-                begin
-                  if LPartsArray.Items[LPartIndex] is TJSONObject then
-                  begin
-                    LPartObj := TJSONObject(LPartsArray.Items[LPartIndex]);
-                    
-                    if LPartObj.Find('functionCall') <> nil then
-                    begin
-                      LFunctionCallObj := LPartObj.Objects['functionCall'];
-                      if LFunctionCallObj <> nil then
-                      begin
-                        LToolCallsArray[LFunctionCallsCount].Id := 'call_' + IntToStr(Random(999999));
-                        LToolCallsArray[LFunctionCallsCount].FunctionName := LFunctionCallObj.Strings['name'];
-                        
-                        // Convert args object to JSON string
-                        LArgsObj := LFunctionCallObj.Objects['args'];
-                        if LArgsObj <> nil then
-                          LToolCallsArray[LFunctionCallsCount].Arguments := LArgsObj.AsJSON
-                        else
-                          LToolCallsArray[LFunctionCallsCount].Arguments := AnsiString('{}');
-                        
-                        Inc(LFunctionCallsCount);
-                      end;
-                    end;
-                  end;
-                end;
-              end;
-              
-              SetLength(Result.Choices[LIndex].Message.ToolCalls, Length(LToolCallsArray));
-              for LPartIndex := 0 to High(LToolCallsArray) do
-                Result.Choices[LIndex].Message.ToolCalls[LPartIndex] := LToolCallsArray[LPartIndex];
-            end
-            else if LContentObj.Find('parts') <> nil then
-            begin
-              // Handle case where 'parts' exists but is not an array
-              // Treat it as a single object and extract text if available
-              if LContentObj.Find('parts') is TJSONObject then
-              begin
-                LPartObj := TJSONObject(LContentObj.Find('parts'));
-                if LPartObj.Find('text') <> nil then
-                  Result.Choices[LIndex].Message.Content := LPartObj.Strings['text']
-                else
-                  Result.Choices[LIndex].Message.Content := AnsiString('');
-              end
-              else
-              begin
-                // If parts is neither array nor object, try to use as string
-                Result.Choices[LIndex].Message.Content := LContentObj.Find('parts').AsString;
-              end;
-            end;
+            // TODO: Add tool calls parsing if needed for OpenAI format
           end;
         end;
       end;
     end;
 
-    // Parse usage metadata if available
-    LUsageData := LJsonObject.Find('usageMetadata');
+    // Parse usage information (OpenAI format)
+    LUsageData := LJsonObject.Find('usage');
     if (LUsageData <> nil) and (LUsageData is TJSONObject) then
     begin
       LUsageObj := TJSONObject(LUsageData);
-      if LUsageObj.Find('promptTokenCount') <> nil then
-        Result.Usage.PromptTokens := LUsageObj.Integers['promptTokenCount'];
-      if LUsageObj.Find('candidatesTokenCount') <> nil then
-        Result.Usage.CompletionTokens := LUsageObj.Integers['candidatesTokenCount'];
-      if LUsageObj.Find('totalTokenCount') <> nil then
-        Result.Usage.TotalTokens := LUsageObj.Integers['totalTokenCount'];
+      if LUsageObj.Find('prompt_tokens') <> nil then
+        Result.Usage.PromptTokens := LUsageObj.Integers['prompt_tokens'];
+      if LUsageObj.Find('completion_tokens') <> nil then
+        Result.Usage.CompletionTokens := LUsageObj.Integers['completion_tokens'];
+      if LUsageObj.Find('total_tokens') <> nil then
+        Result.Usage.TotalTokens := LUsageObj.Integers['total_tokens'];
     end;
 
   finally
