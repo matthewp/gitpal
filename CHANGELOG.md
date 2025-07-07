@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2023-08-01
+### Added
+- Tool calling support for Claude OAuth adapter
+- Enhanced nested progress tracking for more detailed changelog generation
+- Improved documentation with reorganized version history
+
 ## [0.3.3] - 2023-07-15
 ### Added
 - Comprehensive progress tracking during changelog generation
