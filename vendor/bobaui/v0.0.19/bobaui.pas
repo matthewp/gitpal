@@ -4,7 +4,9 @@ unit bobaui;
 {$codepage UTF8}
 {$H+}
 
-// {$DEFINE BOBAUI_DEBUG} // Enable debug logging
+{* Commented out debug logging
+{$DEFINE BOBAUI_DEBUG} // Enable debug logging
+*}
 
 interface
 
@@ -387,7 +389,7 @@ type
     FNeedsFullRedraw: Boolean;
     FRenderingStrategy: TRenderingStrategy;
     FAnsiRenderer: TAnsiRenderer;
-    FLastBaseY: Integer;  // Track base Y to detect scrolling
+    FLastBaseY: Integer;
   public
     constructor Create(AAnsiRenderer: TAnsiRenderer; ARenderingStrategy: TRenderingStrategy);
     destructor Destroy; override;
@@ -2080,7 +2082,7 @@ begin
   FRenderingStrategy := ARenderingStrategy;
   SetLength(FLastRender, 0);
   FNeedsFullRedraw := True;
-  FLastBaseY := -1; // Initialize to invalid value
+  FLastBaseY := -1;  // Initialize to -1 to indicate no previous position
 end;
 
 destructor TDifferentialRenderer.Destroy;
@@ -2104,7 +2106,6 @@ begin
   {$IFDEF BOBAUI_DEBUG}
   BDebugLog('TDifferentialRenderer.DifferentialWrite - Entry');
   BDebugLog('  Content length: ' + IntToStr(Length(Content)) + ' bytes');
-  BDebugLog('  FULL CONTENT: "' + Content + '"');
   {$ENDIF}
   
   // Split content into lines using the function from bobastyle
@@ -2114,48 +2115,34 @@ begin
   BDebugLog('  Line count: ' + IntToStr(Length(NewLines)));
   BDebugLog('  FNeedsFullRedraw: ' + BoolToStr(FNeedsFullRedraw, True));
   BDebugLog('  Length(FLastRender): ' + IntToStr(Length(FLastRender)));
-  for I := 0 to High(NewLines) do
-    BDebugLog('  NewLines[' + IntToStr(I) + ']: "' + NewLines[I] + '"');
   {$ENDIF}
   
-  
-  // Handle first render or full redraw
-  if FNeedsFullRedraw or (Length(FLastRender) = 0) then
-  begin
-    HandleFirstRender(NewLines);
-    Exit;
-  end;
-  
-  // Check if scrolling occurred by detecting base Y change
+  // Get current base position if using inline rendering
+  BaseY := 0;
   if FRenderingStrategy is TInlineRenderingStrategy then
   begin
-    FRenderingStrategy.FCursorPosition.GetInlineBase(BaseX, BaseY);
+    (FRenderingStrategy as TInlineRenderingStrategy).FCursorPosition.GetInlineBase(BaseX, BaseY);
+    
     {$IFDEF BOBAUI_DEBUG}
-    BDebugLog('  Current base Y: ' + IntToStr(BaseY) + ', Last base Y: ' + IntToStr(FLastBaseY));
+    BDebugLog('  Current BaseY: ' + IntToStr(BaseY) + ', Last BaseY: ' + IntToStr(FLastBaseY));
     {$ENDIF}
+    
+    // Check if scrolling occurred (BaseY changed)
     if (FLastBaseY <> -1) and (BaseY <> FLastBaseY) then
     begin
       {$IFDEF BOBAUI_DEBUG}
-      BDebugLog('  SCROLLING DETECTED! Base Y changed from ' + IntToStr(FLastBaseY) + ' to ' + IntToStr(BaseY));
-      BDebugLog('  Forcing full redraw due to scrolling (WITHOUT re-initializing base)');
+      BDebugLog('  Scrolling detected! BaseY changed from ' + IntToStr(FLastBaseY) + ' to ' + IntToStr(BaseY));
+      BDebugLog('  Forcing full redraw of all lines');
       {$ENDIF}
-      // Force redraw but DON'T re-initialize - use existing corrected base position
-      // Write all lines using strategy positioning (without re-initializing base)
-      {$IFDEF BOBAUI_DEBUG}
-      BDebugLog('  Redrawing ' + IntToStr(Length(NewLines)) + ' lines without re-initialization');
-      {$ENDIF}
+      
+      // Scrolling detected - force full redraw without re-initializing base position
       for I := 0 to High(NewLines) do
       begin
-        {$IFDEF BOBAUI_DEBUG}
-        BDebugLog('  Processing Line ' + IntToStr(I) + ': "' + Copy(NewLines[I], 1, 50) + '"...');
-        {$ENDIF}
         FRenderingStrategy.PositionForLine(I);
         system.write(NewLines[I]);
         FRenderingStrategy.FinalizeLine;
-        {$IFDEF BOBAUI_DEBUG}
-        BDebugLog('  Finished writing line ' + IntToStr(I));
-        {$ENDIF}
       end;
+      
       // Update state
       FLastRender := Copy(NewLines);
       FNeedsFullRedraw := False;
@@ -2163,7 +2150,16 @@ begin
       FLastBaseY := BaseY;
       Exit;
     end;
+    
+    // Update FLastBaseY for next comparison
     FLastBaseY := BaseY;
+  end;
+  
+  // Handle first render or full redraw
+  if FNeedsFullRedraw or (Length(FLastRender) = 0) then
+  begin
+    HandleFirstRender(NewLines);
+    Exit;
   end;
   
   // Differential rendering
@@ -2194,6 +2190,7 @@ end;
 procedure TDifferentialRenderer.HandleFirstRender(const NewLines: TStringArray);
 var
   I: Integer;
+  BaseX, BaseY: Integer;
 begin
   {$IFDEF BOBAUI_DEBUG}
   BDebugLog('TDifferentialRenderer.HandleFirstRender - Entry');
@@ -2229,6 +2226,12 @@ begin
   FLastRender := Copy(NewLines);
   FNeedsFullRedraw := False;
   
+  // Update FLastBaseY if using inline rendering
+  if FRenderingStrategy is TInlineRenderingStrategy then
+  begin
+    (FRenderingStrategy as TInlineRenderingStrategy).FCursorPosition.GetInlineBase(BaseX, BaseY);
+    FLastBaseY := BaseY;
+  end;
   
   system.flush(output);
 end;
@@ -2254,14 +2257,6 @@ begin
     // Update line if needed
     if ShouldUpdateLine(I, Line) then
     begin
-      {$IFDEF BOBAUI_DEBUG}
-      BDebugLog('  UPDATING Line ' + IntToStr(I) + ': "' + Line + '"');
-      if I < Length(FLastRender) then
-        BDebugLog('    Previous: "' + FLastRender[I] + '"')
-      else
-        BDebugLog('    Previous: (none - new line)');
-      {$ENDIF}
-      
       // Use strategy for line positioning
       FRenderingStrategy.PositionForLine(I);
       
@@ -2278,12 +2273,6 @@ begin
         if bobastyle.Utf8DisplayWidth(Line) < FRenderingStrategy.FDisplay.GetWidth then
           FAnsiRenderer.ClearToEndOfLine;
       end;
-    end
-    else
-    begin
-      {$IFDEF BOBAUI_DEBUG}
-      BDebugLog('  SKIPPING Line ' + IntToStr(I) + ': "' + Line + '" (unchanged)');
-      {$ENDIF}
     end;
   end;
 end;
