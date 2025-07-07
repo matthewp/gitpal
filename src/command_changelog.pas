@@ -169,6 +169,7 @@ type
     FAnalyzingHistoryMessage: string;
     FGeneratingEntriesCompleted: Boolean;
     FGeneratingEntriesMessage: string;
+    FGeneratingEntriesItems: TStringList;  // List of completed and current nested items
     FWritingChangelogCompleted: Boolean;
     FWritingChangelogMessage: string;
     
@@ -195,6 +196,7 @@ type
     FRepoPath: string;
     FFromTag: string;
     FToTag: string;
+    FOperationId: string;
     function ValidateFilePath(const Path: string): Boolean;
     
     // Tool implementations
@@ -203,7 +205,7 @@ type
     function ReadChangelogFile(const FilePath: string): string;
     function WriteChangelogFile(const Content, FilePath: string): Boolean;
   public
-    constructor Create(const ARepoPath: string = '.'; const AFromTag: string = ''; const AToTag: string = '');
+    constructor Create(const ARepoPath: string = '.'; const AFromTag: string = ''; const AToTag: string = ''; const AOperationId: string = '');
     destructor Destroy; override;
     function ExecuteTool(const ToolCall: TToolCall): TToolResult; override;
     function GetAvailableTools: TToolFunctionArray; override;
@@ -454,6 +456,7 @@ begin
   FAnalyzingHistoryMessage := '';
   FGeneratingEntriesCompleted := False;
   FGeneratingEntriesMessage := '';
+  FGeneratingEntriesItems := TStringList.Create;
   FWritingChangelogCompleted := False;
   FWritingChangelogMessage := '';
 end;
@@ -473,6 +476,11 @@ begin
       FSpinner.Free;
       FSpinner := nil;
     end;
+    if Assigned(FGeneratingEntriesItems) then
+    begin
+      FGeneratingEntriesItems.Free;
+      FGeneratingEntriesItems := nil;
+    end;
     inherited Destroy;
   except
     // Silently ignore cleanup exceptions
@@ -486,6 +494,8 @@ var
   AsyncChangelogMsg: TAsyncChangelogCompletedMsg;
   AsyncProgressMsg: TAsyncProgressUpdateMsg;
   NewSpinner: TSpinner;
+  CleanMessage: string;
+  ItemIndex: Integer;
 begin
   Result.Model := Self;
   Result.Cmd := nil;
@@ -533,7 +543,25 @@ begin
         psAnalyzingHistory:
           FAnalyzingHistoryMessage := AsyncProgressMsg.ProgressMessage;
         psGeneratingEntries:
+        begin
           FGeneratingEntriesMessage := AsyncProgressMsg.ProgressMessage;
+          // Handle nested progress items for generating entries
+          if (AsyncProgressMsg.ProgressMessage <> '') and (AsyncProgressMsg.ProgressMessage.StartsWith('   ')) then
+          begin
+            // This is a nested item (starts with 3 spaces)
+            // Remove the leading spaces for cleaner display
+            CleanMessage := Trim(AsyncProgressMsg.ProgressMessage);
+            // Check if this item is already in our list
+            ItemIndex := FGeneratingEntriesItems.IndexOf(CleanMessage);
+            if ItemIndex = -1 then
+            begin
+              // New item, add it to the list
+              FGeneratingEntriesItems.Add(CleanMessage);
+            end;
+            // Update the current message to show this item as active
+            FGeneratingEntriesMessage := CleanMessage;
+          end;
+        end;
         psWritingChangelog:
           FWritingChangelogMessage := AsyncProgressMsg.ProgressMessage;
       end;
@@ -707,8 +735,22 @@ begin
       
       Lines.Add(StatusIcon + AnsiString(' ✨ Generating changelog entries...'));
       
-      if FGeneratingEntriesMessage <> '' then
+      // Show nested items as checklist
+      if FGeneratingEntriesItems.Count > 0 then
+      begin
+        for i := 0 to FGeneratingEntriesItems.Count - 1 do
+        begin
+          // All items except the current/last one get checkmarks
+          if (i < FGeneratingEntriesItems.Count - 1) or FGeneratingEntriesCompleted then
+            Lines.Add(AnsiString('   ') + AnsiString(bobastyle.ColorText(#$E2#$9C#$93, cGreen)) + AnsiString(' ') + AnsiString(FGeneratingEntriesItems[i]))
+          else
+            Lines.Add(AnsiString('     ') + AnsiString(FGeneratingEntriesItems[i]));
+        end;
+      end
+      else if FGeneratingEntriesMessage <> '' then
+      begin
         Lines.Add(AnsiString('   ') + AnsiString(FGeneratingEntriesMessage));
+      end;
     end;
     
     // Show writing changelog stage
@@ -833,12 +875,13 @@ begin
 end;
 
 
-constructor TGitPalToolContext.Create(const ARepoPath: string; const AFromTag: string; const AToTag: string);
+constructor TGitPalToolContext.Create(const ARepoPath: string; const AFromTag: string; const AToTag: string; const AOperationId: string);
 begin
   inherited Create;
   FRepoPath := ExpandFileName(ARepoPath);
   FFromTag := AFromTag;
   FToTag := AToTag;
+  FOperationId := AOperationId;
   
   // Validate repository using git.pas
   if not git.TGitRepository.IsRepository(FRepoPath) then
@@ -1034,6 +1077,26 @@ begin
   DebugLog('ExecuteTool called - Function: ' + ToolCall.FunctionName);
   DebugLog('ExecuteTool - Arguments: ' + ToolCall.Arguments);
   
+  // Send nested progress updates for key operations during generation phase
+  if (FOperationId <> '') then
+  begin
+    if ToolCall.FunctionName = 'read_changelog' then
+      SendAsyncProgressUpdate(FOperationId, psGeneratingEntries, '   Reading existing changelog...')
+    else if ToolCall.FunctionName = 'get_commits_between' then
+    begin
+      // Parse arguments to get version range
+      if SafeParseToolArguments(ToolCall.Arguments, JsonObj) then
+      begin
+        FromRef := JsonObj.Get('from_tag', '');
+        ToRef := JsonObj.Get('to_tag', '');
+        if (FromRef <> '') and (ToRef <> '') then
+          SendAsyncProgressUpdate(FOperationId, psGeneratingEntries, '   Analyzing changes for ' + ToRef + '...');
+      end;
+    end
+    else if ToolCall.FunctionName = 'write_changelog' then
+      SendAsyncProgressUpdate(FOperationId, psGeneratingEntries, '   Writing updated changelog...');
+  end;
+  
   if ToolCall.FunctionName = 'get_git_tags' then
   begin
     Result := CreateToolResult(ToolCall.Id, GetGitTags, False);
@@ -1211,7 +1274,7 @@ begin
       
       // Create tool context (validates git repository)
       try
-        ToolContext := TGitPalToolContext.Create(RepoPath, FromTag, ToTag);
+        ToolContext := TGitPalToolContext.Create(RepoPath, FromTag, ToTag, '');
       except
         on E: Exception do
         begin
@@ -1436,7 +1499,7 @@ begin
       // Create tool context (validates git repository)
       SendAsyncProgressUpdate(OperationId, psReadingChangelog, '');
       try
-        ToolContext := TGitPalToolContext.Create(RepoPath, FromTag, ToTag);
+        ToolContext := TGitPalToolContext.Create(RepoPath, FromTag, ToTag, OperationId);
       except
         on E: Exception do
         begin
