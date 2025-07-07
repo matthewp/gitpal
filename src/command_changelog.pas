@@ -1031,9 +1031,13 @@ var
   Content: string;
   FromRef, ToRef: string;
 begin
+  DebugLog('ExecuteTool called - Function: ' + ToolCall.FunctionName);
+  DebugLog('ExecuteTool - Arguments: ' + ToolCall.Arguments);
+  
   if ToolCall.FunctionName = 'get_git_tags' then
   begin
     Result := CreateToolResult(ToolCall.Id, GetGitTags, False);
+    DebugLog('ExecuteTool - get_git_tags result length: ' + IntToStr(Length(Result.Content)));
   end
   else if ToolCall.FunctionName = 'read_changelog' then
   begin
@@ -1044,6 +1048,7 @@ begin
         FilePath := JsonObj.Get('file_path', FilePath);
     end;
     Result := CreateToolResult(ToolCall.Id, ReadChangelogFile(FilePath), False);
+    DebugLog('ExecuteTool - read_changelog from ' + FilePath + ', result length: ' + IntToStr(Length(Result.Content)));
   end
   else if ToolCall.FunctionName = 'write_changelog' then
   begin
@@ -1056,6 +1061,7 @@ begin
         FilePath := JsonObj.Get('file_path', FilePath);
     end;
     
+    DebugLog('ExecuteTool - write_changelog to ' + FilePath + ', content length: ' + IntToStr(Length(Content)));
     if WriteChangelogFile(Content, FilePath) then
       Result := CreateToolResult(ToolCall.Id, 'Successfully wrote changelog to ' + ExtractFileName(FilePath), False)
     else
@@ -1071,10 +1077,14 @@ begin
       ToRef := JsonObj.Get('to_tag', '');
     end;
     
+    DebugLog('ExecuteTool - get_commits_between from ' + FromRef + ' to ' + ToRef);
     if (FromRef = '') or (ToRef = '') then
       Result := CreateToolResult(ToolCall.Id, 'Error: from_tag and to_tag parameters are required', True)
     else
+    begin
       Result := CreateToolResult(ToolCall.Id, GetCommitsBetween(FromRef, ToRef), False);
+      DebugLog('ExecuteTool - get_commits_between result length: ' + IntToStr(Length(Result.Content)));
+    end;
   end
   else
   begin
@@ -1083,6 +1093,7 @@ begin
   
   // Always set the function name for tracking
   Result.FunctionName := ToolCall.FunctionName;
+  DebugLog('ExecuteTool completed - Function: ' + ToolCall.FunctionName + ', Error: ' + BoolToStr(Result.IsError, True));
 end;
 
 function TGitPalToolContext.GetAvailableTools: TToolFunctionArray;
@@ -1479,8 +1490,14 @@ begin
       SendAsyncProgressUpdate(OperationId, psWritingChangelog, '');
       
       // Process result
+      DebugLog('AI Response - Choice count: ' + IntToStr(Length(Response.Choices)));
       if Length(Response.Choices) > 0 then
       begin
+        DebugLog('AI Response - Content length: ' + IntToStr(Length(Response.Choices[0].Message.Content)));
+        DebugLog('AI Response - Content: ' + Response.Choices[0].Message.Content);
+        DebugLog('AI Response - ToolCalls count: ' + IntToStr(Length(Response.Choices[0].Message.ToolCalls)));
+        if Length(Response.Choices[0].Message.ToolCalls) > 0 then
+          DebugLog('AI Response - First ToolCall: ' + Response.Choices[0].Message.ToolCalls[0].FunctionName);
         if Length(Response.Choices[0].Message.Content) > 0 then
         begin
           Result := 'SUCCESS:' + Response.Choices[0].Message.Content;

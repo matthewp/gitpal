@@ -21,6 +21,12 @@ type
     function ParseChatCompletionResponse(const AJsonString: string): TLLMChatCompletionResponse;
     procedure ParseStreamEvent(const AEventType: string; const AData: string; ACallback: TLLMStreamCallback);
     
+    // Tool calling helper methods
+    function SerializeClaudeTools(const ATools: array of TToolFunction): TJSONArray;
+    function SerializeClaudeToolParameter(const AParam: TToolParameter): TJSONObject;
+    function ParseToolUseFromContent(const AContentArray: TJSONArray): TToolCallArray;
+    function ChatCompletionWithToolsInternal(const AModel: string; const AMessages: array of TLLMMessage;
+      const ATools: array of TToolFunction; ATemperature: Double; AMaxTokens: Integer): TLLMChatCompletionResponse;
   public
     constructor Create(const AAccessToken: AnsiString);
     destructor Destroy; override;
@@ -143,6 +149,17 @@ begin
     Result.Choices[0].Index := 0;
     Result.Choices[0].Message.Role := lmrAssistant;
     Result.Choices[0].Message.Content := TextContent;
+    
+    // Parse tool calls from content array
+    if LJsonObject.Find('content') <> nil then
+    begin
+      LContentArray := LJsonObject.Arrays['content'];
+      Result.Choices[0].Message.ToolCalls := ParseToolUseFromContent(LContentArray);
+    end
+    else
+    begin
+      SetLength(Result.Choices[0].Message.ToolCalls, 0);
+    end;
     
     if LJsonObject.Find('stop_reason') <> nil then
       Result.Choices[0].FinishReason := AnsiString(LJsonObject.Strings['stop_reason']);
@@ -274,9 +291,15 @@ begin
       
       DebugLog('TClaudeOAuthAdapter.ChatCompletion: Sending POST to ' + string(FBaseUrl) + '/messages');
       
+      // Debug log request
+      DebugLog('[DEBUG] Claude OAuth Request: ' + LRequestJson.AsJSON);
+      
       try
         LResponseText := FHttpClient.Post(string(FBaseUrl) + '/messages');
         DebugLog('TClaudeOAuthAdapter.ChatCompletion: Response received, length = ' + IntToStr(Length(LResponseText)));
+        
+        // Debug log raw response
+        DebugLog('[DEBUG] Claude OAuth Response: ' + LResponseText);
       except
         on E: Exception do
         begin
@@ -471,15 +494,343 @@ end;
 function TClaudeOAuthAdapter.ChatCompletionWithTools(const AModel: string; const AMessages: array of TLLMMessage;
   const ATools: array of TToolFunction; AToolContext: IToolContext;
   ATemperature: Double; AMaxTokens: Integer): TLLMChatCompletionResponse;
+var
+  CurrentMessages: array of TLLMMessage;
+  Response: TLLMChatCompletionResponse;
+  ToolCall: TToolCall;
+  ToolResult: TToolResult;
+  i, LIndex: Integer;
+  MaxIterations: Integer;
 begin
-  // For now, just use regular chat completion
-  // TODO: Implement tool calling support for OAuth
-  Result := ChatCompletion(AModel, AMessages, ATemperature, AMaxTokens);
+  // Initialize conversation with original messages
+  SetLength(CurrentMessages, Length(AMessages));
+  for i := 0 to High(AMessages) do
+    CurrentMessages[i] := AMessages[i];
+  
+  MaxIterations := 10; // Prevent infinite loops
+  
+  for i := 1 to MaxIterations do
+  begin
+    DebugLog('Tool calling iteration ' + IntToStr(i));
+    
+    // Make API request with tools
+    Response := ChatCompletionWithToolsInternal(AModel, CurrentMessages, ATools, ATemperature, AMaxTokens);
+    
+    // Check if AI wants to use tools
+    if Length(Response.Choices) > 0 then
+    begin
+      if Length(Response.Choices[0].Message.ToolCalls) > 0 then
+      begin
+        DebugLog('AI requested ' + IntToStr(Length(Response.Choices[0].Message.ToolCalls)) + ' tool calls');
+        
+        // IMPORTANT: Add assistant's message with tool calls to conversation FIRST
+        SetLength(CurrentMessages, Length(CurrentMessages) + 1);
+        CurrentMessages[High(CurrentMessages)] := Response.Choices[0].Message;
+        
+        // Execute each tool call and add results
+        for LIndex := 0 to Length(Response.Choices[0].Message.ToolCalls) - 1 do
+        begin
+          ToolCall := Response.Choices[0].Message.ToolCalls[LIndex];
+          DebugLog('Executing tool: ' + ToolCall.FunctionName);
+          
+          try
+            ToolResult := AToolContext.ExecuteTool(ToolCall);
+            ToolResult.FunctionName := ToolCall.FunctionName;
+          except
+            on E: Exception do
+            begin
+              ToolResult.ToolCallId := ToolCall.Id;
+              ToolResult.Content := 'Tool execution failed: ' + E.Message;
+              ToolResult.IsError := True;
+              ToolResult.FunctionName := ToolCall.FunctionName;
+            end;
+          end;
+          
+          // Add tool result to conversation
+          SetLength(CurrentMessages, Length(CurrentMessages) + 1);
+          CurrentMessages[High(CurrentMessages)].Role := lmrTool;
+          CurrentMessages[High(CurrentMessages)].Content := ToolResult.Content;
+          CurrentMessages[High(CurrentMessages)].Name := AnsiString('');
+          CurrentMessages[High(CurrentMessages)].ToolCallId := ToolResult.ToolCallId;
+          CurrentMessages[High(CurrentMessages)].FunctionName := ToolResult.FunctionName;
+          SetLength(CurrentMessages[High(CurrentMessages)].ToolCalls, 0);
+        end;
+        
+        // Continue conversation (loop back for next iteration)
+      end
+      else
+      begin
+        // AI provided final response, we're done
+        DebugLog('Tool calling completed - final response received');
+        Break;
+      end;
+    end
+    else
+    begin
+      // No response choices, break
+      Break;
+    end;
+  end;
+  
+  Result := Response;
 end;
 
 function TClaudeOAuthAdapter.SupportsToolCalling: Boolean;
 begin
-  Result := False; // TODO: Implement tool calling support
+  Result := True;
+end;
+
+function TClaudeOAuthAdapter.SerializeClaudeTools(const ATools: array of TToolFunction): TJSONArray;
+var
+  i: Integer;
+  ToolObj: TJSONObject;
+  InputSchemaObj: TJSONObject;
+  PropertiesObj: TJSONObject;
+  RequiredArray: TJSONArray;
+  j: Integer;
+begin
+  Result := TJSONArray.Create;
+  
+  for i := 0 to High(ATools) do
+  begin
+    ToolObj := TJSONObject.Create;
+    ToolObj.Add('name', ATools[i].Name);
+    ToolObj.Add('description', ATools[i].Description);
+    
+    // Create input schema
+    InputSchemaObj := TJSONObject.Create;
+    InputSchemaObj.Add('type', 'object');
+    
+    // Create properties object
+    PropertiesObj := TJSONObject.Create;
+    RequiredArray := TJSONArray.Create;
+    
+    for j := 0 to High(ATools[i].Parameters) do
+    begin
+      PropertiesObj.Add(ATools[i].Parameters[j].Name, SerializeClaudeToolParameter(ATools[i].Parameters[j]));
+      if ATools[i].Parameters[j].Required then
+        RequiredArray.Add(ATools[i].Parameters[j].Name);
+    end;
+    
+    InputSchemaObj.Add('properties', PropertiesObj);
+    if RequiredArray.Count > 0 then
+      InputSchemaObj.Add('required', RequiredArray)
+    else
+      RequiredArray.Free;
+    
+    ToolObj.Add('input_schema', InputSchemaObj);
+    Result.Add(ToolObj);
+  end;
+end;
+
+function TClaudeOAuthAdapter.SerializeClaudeToolParameter(const AParam: TToolParameter): TJSONObject;
+begin
+  Result := TJSONObject.Create;
+  
+  case AParam.ParamType of
+    tptString:
+      Result.Add('type', 'string');
+    tptInteger:
+      Result.Add('type', 'integer');
+    tptNumber:
+      Result.Add('type', 'number');
+    tptBoolean:
+      Result.Add('type', 'boolean');
+    tptArray:
+      Result.Add('type', 'array');
+    tptObject:
+      Result.Add('type', 'object');
+  end;
+  
+  if AParam.Description <> AnsiString('') then
+    Result.Add('description', AParam.Description);
+end;
+
+function TClaudeOAuthAdapter.ParseToolUseFromContent(const AContentArray: TJSONArray): TToolCallArray;
+var
+  i: Integer;
+  ContentItem: TJSONObject;
+  ToolUseCount: Integer;
+  ToolIndex: Integer;
+begin
+  // Initialize result to empty array
+  Result := nil;
+  SetLength(Result, 0);
+  
+  // First pass: count tool_use blocks
+  ToolUseCount := 0;
+  for i := 0 to AContentArray.Count - 1 do
+  begin
+    if AContentArray.Items[i] is TJSONObject then
+    begin
+      ContentItem := TJSONObject(AContentArray.Items[i]);
+      if ContentItem.Strings['type'] = 'tool_use' then
+        Inc(ToolUseCount);
+    end;
+  end;
+  
+  if ToolUseCount = 0 then Exit;
+  
+  SetLength(Result, ToolUseCount);
+  ToolIndex := 0;
+  
+  // Second pass: extract tool calls
+  for i := 0 to AContentArray.Count - 1 do
+  begin
+    if AContentArray.Items[i] is TJSONObject then
+    begin
+      ContentItem := TJSONObject(AContentArray.Items[i]);
+      if ContentItem.Strings['type'] = 'tool_use' then
+      begin
+        Result[ToolIndex].Id := ContentItem.Strings['id'];
+        Result[ToolIndex].FunctionName := ContentItem.Strings['name'];
+        // Convert input object back to JSON string
+        if ContentItem.Find('input') <> nil then
+          Result[ToolIndex].Arguments := ContentItem.Objects['input'].AsJSON
+        else
+          Result[ToolIndex].Arguments := '{}';
+        Inc(ToolIndex);
+      end;
+    end;
+  end;
+end;
+
+function TClaudeOAuthAdapter.ChatCompletionWithToolsInternal(const AModel: string; const AMessages: array of TLLMMessage;
+  const ATools: array of TToolFunction; ATemperature: Double; AMaxTokens: Integer): TLLMChatCompletionResponse;
+var
+  LRequestJson: TJSONObject;
+  LMessagesArray: TJSONArray;
+  LToolsArray: TJSONArray;
+  LMessageObj: TJSONObject;
+  LMessage: TLLMMessage;
+  LRequestBody: TStringStream;
+  LResponseText: string;
+  LIndex: Integer;
+  LSystemMessage: string;
+  LContentArray: TJSONArray;
+  LContentObj: TJSONObject;
+  i: Integer;
+begin
+  LRequestJson := TJSONObject.Create;
+  try
+    LRequestJson.Add('model', AModel);
+    LRequestJson.Add('max_tokens', AMaxTokens);
+    if ATemperature <> 0.7 then
+      LRequestJson.Add('temperature', ATemperature);
+
+    // Add tools if provided
+    if Length(ATools) > 0 then
+    begin
+      LToolsArray := SerializeClaudeTools(ATools);
+      LRequestJson.Add('tools', LToolsArray);
+    end;
+
+    // For OAuth, we ONLY use the Claude Code system message
+    LSystemMessage := 'You are Claude Code, Anthropic''s official CLI for Claude.';
+    LMessagesArray := TJSONArray.Create;
+    
+    for LIndex := Low(AMessages) to High(AMessages) do
+    begin
+      LMessage := AMessages[LIndex];
+      if LMessage.Role = lmrSystem then
+      begin
+        // Skip system messages for OAuth - we use our own Claude Code system message above
+        Continue;
+      end
+      else
+      begin
+        LMessageObj := TJSONObject.Create;
+        LMessageObj.Add('role', MessageRoleToString(LMessage.Role));
+        
+        // Claude uses content blocks
+        LContentArray := TJSONArray.Create;
+        
+        // Check if this is a tool result message
+        if LMessage.Role = lmrTool then
+        begin
+          // Tool result message
+          LContentObj := TJSONObject.Create;
+          LContentObj.Add('type', 'tool_result');
+          LContentObj.Add('tool_use_id', LMessage.ToolCallId);
+          LContentObj.Add('content', LMessage.Content);
+          LContentArray.Add(LContentObj);
+        end
+        else if (LMessage.Role = lmrAssistant) and (Length(LMessage.ToolCalls) > 0) then
+        begin
+          // Assistant message with tool calls
+          if LMessage.Content <> AnsiString('') then
+          begin
+            LContentObj := TJSONObject.Create;
+            LContentObj.Add('type', 'text');
+            LContentObj.Add('text', string(LMessage.Content));
+            LContentArray.Add(LContentObj);
+          end;
+          
+          // Add tool_use blocks
+          for i := 0 to Length(LMessage.ToolCalls) - 1 do
+          begin
+            LContentObj := TJSONObject.Create;
+            LContentObj.Add('type', 'tool_use');
+            LContentObj.Add('id', LMessage.ToolCalls[i].Id);
+            LContentObj.Add('name', LMessage.ToolCalls[i].FunctionName);
+            // Parse arguments JSON and add as object
+            try
+              LContentObj.Add('input', GetJSON(LMessage.ToolCalls[i].Arguments));
+            except
+              // If JSON parsing fails, add empty object
+              LContentObj.Add('input', TJSONObject.Create);
+            end;
+            LContentArray.Add(LContentObj);
+          end;
+        end
+        else
+        begin
+          // Regular text message
+          LContentObj := TJSONObject.Create;
+          LContentObj.Add('type', 'text');
+          LContentObj.Add('text', string(LMessage.Content));
+          LContentArray.Add(LContentObj);
+        end;
+        
+        LMessageObj.Add('content', LContentArray);
+        LMessagesArray.Add(LMessageObj);
+      end;
+    end;
+    
+    // Always include the Claude Code system message for OAuth
+    LRequestJson.Add('system', string(LSystemMessage));
+    LRequestJson.Add('messages', LMessagesArray);
+
+    LRequestBody := TStringStream.Create(LRequestJson.AsJSON);
+    try
+      FHttpClient.RequestBody := LRequestBody;
+      
+      DebugLog('TClaudeOAuthAdapter.ChatCompletionWithToolsInternal: Sending POST to ' + string(FBaseUrl) + '/messages');
+      
+      // Debug log request
+      DebugLog('[DEBUG] Claude OAuth Tools Request: ' + LRequestJson.AsJSON);
+      
+      try
+        LResponseText := FHttpClient.Post(string(FBaseUrl) + '/messages');
+        DebugLog('TClaudeOAuthAdapter.ChatCompletionWithToolsInternal: Response received, length = ' + IntToStr(Length(LResponseText)));
+        
+        // Debug log raw response
+        DebugLog('[DEBUG] Claude OAuth Tools Response: ' + LResponseText);
+      except
+        on E: Exception do
+        begin
+          DebugLog('TClaudeOAuthAdapter.ChatCompletionWithToolsInternal: HTTP error: ' + E.Message);
+          raise;
+        end;
+      end;
+      
+      Result := ParseChatCompletionResponse(LResponseText);
+    finally
+      LRequestBody.Free;
+    end;
+  finally
+    LRequestJson.Free;
+  end;
 end;
 
 end.
