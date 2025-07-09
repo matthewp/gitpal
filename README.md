@@ -9,6 +9,7 @@ An AI-powered git assistant CLI tool written in Pascal that analyzes your git ch
 - **AI-powered commit messages**: Analyzes staged changes and generates descriptive commit messages with real-time streaming
 - **Interactive git undo**: Safely recover from git mistakes with AI-assisted operation analysis and automated backup creation
 - **Orphaned commit recovery**: Find and restore lost commits that are no longer reachable from any branch
+- **Git operation analysis**: Understand what happened during complex git operations with AI-powered explanations
 - **Interactive setup wizard**: Configure providers, API keys, and models with an intuitive TUI
 - **Automated changelog generation**: Update CHANGELOG.md with AI-generated summaries from git history
 - **Multiple LLM support**: Choose from OpenAI (GPT-4, GPT-3.5), Anthropic Claude (Sonnet, Haiku), or Google Gemini models
@@ -203,6 +204,29 @@ gitpal recover --prompt "lost my work on user authentication"
 gitpal recover --provider claude
 ```
 
+### Understanding Git Operations
+
+```bash
+# Analyze recent git operations and get AI-powered explanations
+gitpal explain
+
+# Use a specific provider for analysis
+gitpal explain --provider claude
+```
+
+**What gitpal explain can help with:**
+- Understanding what happened during complex rebases or merges
+- Analyzing the impact of git operations on your repository
+- Getting context for unexpected repository states
+- Learning from git operations to improve your workflow
+- Debugging issues after complex git operations
+
+**Analysis includes:**
+- **Before/after states**: Shows repository state before and after operations
+- **Operation timeline**: Recent git operations in chronological order
+- **Impact analysis**: What changed and why
+- **AI explanations**: Plain English explanations of complex git operations
+
 **What gitpal recover can help with:**
 - Commits lost during force pushes or branch deletions
 - Work that got "lost" during complex rebases or merges
@@ -236,6 +260,7 @@ gitpal --help
 gitpal commit --help
 gitpal undo --help
 gitpal recover --help
+gitpal explain --help
 
 # Show version
 gitpal --version
@@ -308,6 +333,13 @@ When recovering orphaned commits:
 - **Detailed recovery plans** - Shows exact git commands and expected outcomes
 - **Three-option confirmation** - Accept, Decline, or Show diffs before execution
 
+### Explain Interface
+When analyzing git operations:
+- **q** - Exit the analysis view
+- **Real-time analysis** - Shows spinner while analyzing recent operations
+- **Formatted output** - Color-coded sections with emojis for easy reading
+- **Detailed explanations** - AI-powered insights into what happened and why
+
 ### Editor Integration
 gitpal respects your environment's editor settings:
 - Uses `$EDITOR` or `$VISUAL` environment variables
@@ -334,7 +366,8 @@ src/
 ├── command_commit.pas   # Commit message generation
 ├── command_changelog.pas # Changelog generation
 ├── command_undo.pas     # Interactive git mistake recovery
-└── command_recover.pas  # Orphaned commit recovery
+├── command_recover.pas  # Orphaned commit recovery
+└── command_explain.pas  # Git operation analysis
 
 vendor/
 ├── bobaui/             # TUI framework
@@ -382,6 +415,12 @@ If the edit feature doesn't work:
 - **"Branch creation failed"**: Ensure you have permission to create branches
 - **"Backup branch exists"**: Previous backup branch exists, will use timestamped name
 - **"Git repository not found"**: Run the command from within a git repository
+
+#### Explain Command Issues
+- **"No reflog entries found"**: Repository might be new or reflog might be disabled
+- **"Analysis incomplete"**: AI provider may be unavailable or rate-limited
+- **"Git repository not found"**: Run the command from within a git repository
+- **"Permission denied"**: Ensure you have read access to the git repository
 
 ## Contributing
 
