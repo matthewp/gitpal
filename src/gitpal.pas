@@ -16,7 +16,7 @@ uses
   config_manager;
 
 const
-  AppVersion = '0.5.0';  // Update this when tagging new releases
+  AppVersion = '0.6.0';  // Update this when tagging new releases
 
 function EnsureConfigurationExists: Boolean;
 var
