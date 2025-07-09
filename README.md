@@ -7,6 +7,7 @@ An AI-powered git assistant CLI tool written in Pascal that analyzes your git ch
 ## Features
 
 - **AI-powered commit messages**: Analyzes staged changes and generates descriptive commit messages with real-time streaming
+- **Interactive git undo**: Safely recover from git mistakes with AI-assisted operation analysis and automated backup creation
 - **Interactive setup wizard**: Configure providers, API keys, and models with an intuitive TUI
 - **Automated changelog generation**: Update CHANGELOG.md with AI-generated summaries from git history
 - **Multiple LLM support**: Choose from OpenAI (GPT-4, GPT-3.5), Anthropic Claude (Sonnet, Haiku), or Google Gemini models
@@ -161,12 +162,40 @@ gitpal changelog --from v1.0.0 --to v2.0.0
 gitpal changelog --provider openai
 ```
 
+### Recovering from Git Mistakes
+
+```bash
+# Interactive recovery from recent git operations
+gitpal undo
+
+# Provide context to help AI analyze your specific situation
+gitpal undo --prompt "I messed up the rebase"
+
+# Use a specific provider for operation analysis
+gitpal undo --provider claude
+```
+
+**What gitpal undo can help with:**
+- Accidentally ran `git reset --hard` and lost commits
+- Botched a rebase and want to go back to the previous state
+- Deleted a branch by mistake
+- Merged the wrong branch and need to undo it
+- Lost commits during complex git operations
+
+**Safety features:**
+- Creates automatic backup branches before any recovery
+- Shows detailed impact analysis before making changes
+- Risk assessment with visual indicators (🟢 LOW, 🟡 MEDIUM, 🔴 HIGH)
+- AI-powered explanations of what each operation will do
+- Requires confirmation for all recovery operations
+
 ### Global Options
 
 ```bash
 # Show help for any command
 gitpal --help
 gitpal commit --help
+gitpal undo --help
 
 # Show version
 gitpal --version
@@ -221,6 +250,15 @@ When generating a commit message:
 - **e** - Edit commit message (opens in your `$EDITOR`)
 - **q** - Cancel without committing
 
+### Undo Interface
+When recovering from git mistakes:
+- **Arrow keys** or **j/k** - Navigate between undoable operations
+- **Enter** - Select operation to undo
+- **q** - Cancel and exit
+- **Real-time progress** - Shows reflog analysis and AI processing
+- **Risk indicators** - Color-coded safety levels for each operation
+- **Detailed previews** - Shows exactly what each undo will do
+
 ### Editor Integration
 gitpal respects your environment's editor settings:
 - Uses `$EDITOR` or `$VISUAL` environment variables
@@ -245,7 +283,8 @@ The project uses:
 src/
 ├── gitpal.pas           # Main CLI entry point
 ├── command_commit.pas   # Commit message generation
-└── command_changelog.pas # Changelog generation
+├── command_changelog.pas # Changelog generation
+└── command_undo.pas     # Interactive git mistake recovery
 
 vendor/
 ├── bobaui/             # TUI framework
@@ -280,6 +319,12 @@ If the edit feature doesn't work:
 - Requires active Claude Pro or Max subscription
 - Clear cookies/cache if login fails
 - Fallback to API key method if needed
+
+#### Undo Command Issues
+- **"Repository not clean"**: Commit or stash changes before running `gitpal undo`
+- **"No reflog entries found"**: Repository might be new or reflog might be disabled
+- **"Operation not found"**: The operation you're looking for might be too old (only shows recent 50 entries)
+- **Authentication errors**: Ensure your AI provider is configured with `gitpal setup`
 
 ## Contributing
 
