@@ -10,6 +10,7 @@ uses
   command_commit,
   command_changelog,
   command_setup,
+  command_undo,
   config_manager;
 
 const
@@ -45,6 +46,7 @@ begin
   writeln('  setup        Configure gitpal with your AI provider');
   writeln('  commit       Generate and apply AI-powered commit messages');
   writeln('  changelog    Update CHANGELOG.md with recent changes');
+  writeln('  undo         Interactively undo recent git operations');
   writeln('');
   writeln('Options:');
   writeln('  --help, -h     Show this help message');
@@ -116,6 +118,28 @@ begin
   writeln('Note: By default, processes up to 5 most recent missing versions.');
 end;
 
+procedure ShowUndoHelp;
+begin
+  writeln('gitpal undo - Interactively undo recent git operations');
+  writeln('');
+  writeln('Usage:');
+  writeln('  gitpal undo [options]');
+  writeln('');
+  writeln('Description:');
+  writeln('  Analyzes recent git operations and provides an interactive interface');
+  writeln('  to safely undo destructive operations like resets, rebases, and merges.');
+  writeln('  Creates backup branches before making changes for safety.');
+  writeln('');
+  writeln('Options:');
+  writeln('  --prompt <text>      Filter operations by description (e.g., "rebase")');
+  writeln('  --help, -h           Show this help message');
+  writeln('');
+  writeln('Examples:');
+  writeln('  gitpal undo');
+  writeln('  gitpal undo --prompt "I messed up the rebase"');
+  writeln('  gitpal undo --prompt "lost my work on login feature"');
+end;
+
 var
   Command: string;
   CustomPrompt: string;
@@ -161,6 +185,11 @@ begin
         else if Command = AnsiString('changelog') then
         begin
           ShowChangelogHelp;
+          Exit;
+        end
+        else if Command = AnsiString('undo') then
+        begin
+          ShowUndoHelp;
           Exit;
         end;
         Break;
@@ -262,6 +291,10 @@ begin
   begin
     if EnsureConfigurationExists then
       RunChangelogCommand(ProviderOverride, FromTag, ToTag);
+  end
+  else if Command = AnsiString('undo') then
+  begin
+    RunUndoCommand(CustomPrompt);
   end
   else
   begin

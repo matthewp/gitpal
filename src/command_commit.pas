@@ -433,13 +433,31 @@ var
   StreamMsg: TAsyncStreamingChunkMsg;
 begin
   DebugLog('[StreamCallback] Called - Finished: ' + BoolToStr(AFinished, True) + ', Chunk length: ' + IntToStr(Length(AChunk)));
+  DebugLog('[StreamCallback] Chunk content: ' + AChunk);
   
   if AFinished then
   begin
     FStreamingFinished := True;
     DebugLog('[StreamCallback] Streaming finished, total message length: ' + IntToStr(Length(FCommitMessage)));
-    if Pos('Error:', FCommitMessage) = 1 then
-      FStreamingError := FCommitMessage;
+    DebugLog('[StreamCallback] Final message content: ' + FCommitMessage);
+    
+    // Check for various error patterns
+    if (Pos('Error:', FCommitMessage) = 1) or 
+       (Pos('error', LowerCase(FCommitMessage)) > 0) or
+       (Length(FCommitMessage) = 0) then
+    begin
+      if Length(FCommitMessage) = 0 then
+      begin
+        // Check if the last chunk was an error message
+        if (AChunk <> '') and (Pos('Error:', AChunk) = 1) then
+          FStreamingError := AChunk
+        else
+          FStreamingError := 'Empty response from API';
+      end
+      else
+        FStreamingError := FCommitMessage;
+      DebugLog('[StreamCallback] Error detected: ' + FStreamingError);
+    end;
   end
   else
   begin
@@ -456,6 +474,7 @@ begin
     except
       on E: Exception do
       begin
+        DebugLog('[StreamCallback] Exception sending message: ' + E.Message);
         StreamMsg.Free;
       end;
     end;
@@ -467,6 +486,8 @@ begin
   try
     DebugLog('[TAsyncCommitGeneration.ExecuteOperation] Starting async generation');
     DebugLog('[TAsyncCommitGeneration.ExecuteOperation] DiffContent length: ' + IntToStr(Length(FDiffContent)));
+    DebugLog('[TAsyncCommitGeneration.ExecuteOperation] CustomPrompt: ' + FCustomPrompt);
+    DebugLog('[TAsyncCommitGeneration.ExecuteOperation] ProviderOverride: ' + FProviderOverride);
     
     GenerateCommitMessageStream(FDiffContent, FCustomPrompt, @StreamCallback, FProviderOverride);
     
@@ -477,18 +498,23 @@ begin
     end;
     
     DebugLog('[TAsyncCommitGeneration.ExecuteOperation] Streaming finished');
+    DebugLog('[TAsyncCommitGeneration.ExecuteOperation] Final commit message: ' + FCommitMessage);
+    DebugLog('[TAsyncCommitGeneration.ExecuteOperation] Streaming error: ' + FStreamingError);
     
     if FStreamingError <> '' then
     begin
+      DebugLog('[TAsyncCommitGeneration.ExecuteOperation] Creating error result');
       Result := TAsyncCommitGeneratedMsg.CreateError(FOperationId, FStreamingError);
     end
     else
     begin
+      DebugLog('[TAsyncCommitGeneration.ExecuteOperation] Creating success result');
       Result := TAsyncCommitGeneratedMsg.Create(FOperationId, FCommitMessage);
     end;
   except
     on E: Exception do
     begin
+      DebugLog('[TAsyncCommitGeneration.ExecuteOperation] Exception: ' + E.ClassName + ': ' + E.Message);
       Result := TAsyncCommitGeneratedMsg.CreateError(FOperationId, 'Exception: ' + E.Message);
     end;
   end;
@@ -884,7 +910,9 @@ begin
       else
       begin
         // Error - show error and quit
-        writeln('Error generating commit message: ' + AsyncCommitMsg.ErrorMessage);
+        writeln();
+        writeln(bobastyle.ColorText('✗ Error generating commit message:', bobastyle.cBrightRed));
+        writeln('  ' + AsyncCommitMsg.ErrorMessage);
         Result.Cmd := bobaui.QuitCmd;
       end;
     end
@@ -1295,6 +1323,8 @@ begin
       try
         DebugLog('[GenerateCommitMessageStream] About to call ChatCompletionStream');
         DebugLog('[GenerateCommitMessageStream] Model: ' + Provider.GetDefaultModel);
+        DebugLog('[GenerateCommitMessageStream] System prompt: ' + Copy(SystemPrompt, 1, 200) + '...');
+        DebugLog('[GenerateCommitMessageStream] User prompt length: ' + IntToStr(Length(UserPrompt)));
         
         // Call ChatCompletionStream
         Provider.ChatCompletionStream(
@@ -1309,7 +1339,7 @@ begin
       except
         on E: Exception do
         begin
-          DebugLog('[GenerateCommitMessageStream] Exception: ' + E.Message);
+          DebugLog('[GenerateCommitMessageStream] Exception caught: ' + E.ClassName + ': ' + E.Message);
           ACallback('Error: ' + E.Message, True);
         end;
       end;

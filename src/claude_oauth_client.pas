@@ -8,7 +8,7 @@ interface
 
 uses
   SysUtils, Classes, DateUtils, fphttpclient, opensslsockets, fpjson, jsonparser,
-  oauth_client, base64, Process;
+  oauth_client, base64, Process, logging;
 
 type
   TClaudeOAuthClient = class(TOAuthClient)
@@ -265,12 +265,16 @@ end;
 
 function TClaudeOAuthClient.RefreshTokens(const RefreshToken: AnsiString): TOAuthTokens;
 var
-  PostData: TStringList;
+  RequestJson: TJSONObject;
+  JsonString: string;
   Response: string;
   JsonParser: TJSONParser;
   JsonData: TJSONObject;
   JsonValue: TJSONData;
   ExpiresIn: Integer;
+  i: Integer;
+  ActualBodyBytes: array of Byte;
+  ActualBodyString: string;
 begin
   // Initialize result
   FillChar(Result, SizeOf(Result), 0);
@@ -281,16 +285,69 @@ begin
   Result.ExpiresAt := 0;
   Result.Scope := AnsiString('');
   
-  PostData := TStringList.Create;
+  RequestJson := TJSONObject.Create;
   try
-    PostData.Add('grant_type=refresh_token');
-    PostData.Add('refresh_token=' + string(RefreshToken));
-    PostData.Add('client_id=' + CLAUDE_OAUTH_CLIENT_ID);
+    RequestJson.Add('grant_type', 'refresh_token');
+    RequestJson.Add('refresh_token', string(RefreshToken));
+    RequestJson.Add('client_id', CLAUDE_OAUTH_CLIENT_ID);
     
-    FHttpClient.RequestBody := TStringStream.Create(PostData.Text);
+    JsonString := RequestJson.AsJSON;
+    
+    DebugLog('[ClaudeOAuthClient.RefreshTokens] Request Details:');
+    DebugLog('[ClaudeOAuthClient.RefreshTokens] URL: ' + CLAUDE_OAUTH_TOKEN_ENDPOINT);
+    DebugLog('[ClaudeOAuthClient.RefreshTokens] Method: POST');
+    DebugLog('[ClaudeOAuthClient.RefreshTokens] Content-Type: application/json');
+    DebugLog('[ClaudeOAuthClient.RefreshTokens] Client ID: ' + CLAUDE_OAUTH_CLIENT_ID);
+    DebugLog('[ClaudeOAuthClient.RefreshTokens] Refresh Token (first 20 chars): ' + Copy(string(RefreshToken), 1, 20) + '...');
+    DebugLog('[ClaudeOAuthClient.RefreshTokens] Request Body: ' + JsonString);
+    DebugLog('[ClaudeOAuthClient.RefreshTokens] Request Body Length: ' + IntToStr(Length(JsonString)));
+    
+    FHttpClient.RequestBody := TStringStream.Create(JsonString);
     try
-      FHttpClient.AddHeader('Content-Type', 'application/x-www-form-urlencoded');
+      FHttpClient.AddHeader('Content-Type', 'application/json');
+      
+      // Log the ACTUAL headers that will be sent
+      DebugLog('[ClaudeOAuthClient.RefreshTokens] ACTUAL Request Headers:');
+      if Assigned(FHttpClient.RequestHeaders) then
+      begin
+        for i := 0 to FHttpClient.RequestHeaders.Count - 1 do
+          DebugLog('[ClaudeOAuthClient.RefreshTokens] Header[' + IntToStr(i) + ']: ' + FHttpClient.RequestHeaders[i]);
+      end
+      else
+        DebugLog('[ClaudeOAuthClient.RefreshTokens] No request headers found');
+      
+      // Log the ACTUAL request body
+      if Assigned(FHttpClient.RequestBody) then
+      begin
+        FHttpClient.RequestBody.Position := 0;
+        SetLength(ActualBodyBytes, FHttpClient.RequestBody.Size);
+        FHttpClient.RequestBody.ReadBuffer(ActualBodyBytes[0], FHttpClient.RequestBody.Size);
+        FHttpClient.RequestBody.Position := 0; // Reset position for the actual request
+        ActualBodyString := '';
+        for i := 0 to High(ActualBodyBytes) do
+          ActualBodyString := ActualBodyString + Chr(ActualBodyBytes[i]);
+        DebugLog('[ClaudeOAuthClient.RefreshTokens] ACTUAL Request Body (JSON): ' + ActualBodyString);
+        DebugLog('[ClaudeOAuthClient.RefreshTokens] ACTUAL Request Body Length: ' + IntToStr(Length(ActualBodyString)));
+      end
+      else
+        DebugLog('[ClaudeOAuthClient.RefreshTokens] No request body found');
+      
+      DebugLog('[ClaudeOAuthClient.RefreshTokens] Making HTTP request...');
       Response := FHttpClient.Post(CLAUDE_OAUTH_TOKEN_ENDPOINT);
+      
+      // Log ACTUAL response headers
+      DebugLog('[ClaudeOAuthClient.RefreshTokens] ACTUAL Response Headers:');
+      if Assigned(FHttpClient.ResponseHeaders) then
+      begin
+        for i := 0 to FHttpClient.ResponseHeaders.Count - 1 do
+          DebugLog('[ClaudeOAuthClient.RefreshTokens] Response Header[' + IntToStr(i) + ']: ' + FHttpClient.ResponseHeaders[i]);
+      end
+      else
+        DebugLog('[ClaudeOAuthClient.RefreshTokens] No response headers found');
+      
+      DebugLog('[ClaudeOAuthClient.RefreshTokens] Response Status: ' + IntToStr(FHttpClient.ResponseStatusCode));
+      DebugLog('[ClaudeOAuthClient.RefreshTokens] Response Body: ' + Response);
+      DebugLog('[ClaudeOAuthClient.RefreshTokens] Response Body Length: ' + IntToStr(Length(Response)));
       
       if FHttpClient.ResponseStatusCode <> 200 then
         raise Exception.Create('Token refresh failed: HTTP ' + IntToStr(FHttpClient.ResponseStatusCode) + ' - ' + Response);
@@ -343,7 +400,7 @@ begin
       FHttpClient.RequestBody := nil;
     end;
   finally
-    PostData.Free;
+    RequestJson.Free;
   end;
 end;
 

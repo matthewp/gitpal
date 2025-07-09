@@ -42,6 +42,13 @@ type
     // Utility functions
     class function HasUnstagedChanges: TGitResult;
     class function GetStagedDiff: TGitResult;
+    
+    // Undo command operations
+    class function GetReflog(const Options: array of string): TGitResult;
+    class function GetCommitInfo(const Hash: string): TGitResult;
+    class function Reset(const Target: string; const Mode: string = ''): TGitResult;
+    class function CreateBranch(const Name: string; const StartPoint: string = ''): TGitResult;
+    class function CheckoutBranch(const Name: string): TGitResult;
   end;
 
 implementation
@@ -293,6 +300,199 @@ end;
 class function TGitRepository.GetStagedDiff: TGitResult;
 begin
   Result := GetDiff(['--cached']);
+end;
+
+class function TGitRepository.GetReflog(const Options: array of string): TGitResult;
+var
+  GitProcess: TProcess;
+  I: Integer;
+  OutputStr: string;
+  Buffer: array[0..2047] of char;
+  BytesRead: Integer;
+begin
+  // Initialize result
+  Result.Success := False;
+  Result.Output := '';
+  Result.ErrorMessage := '';
+  Result.ExitCode := -1;
+  
+  // Use direct process execution to avoid sanitization of format strings
+  GitProcess := TProcess.Create(nil);
+  try
+    GitProcess.Executable := 'git';
+    GitProcess.Parameters.Add('reflog');
+    
+    // Add options without sanitization (needed for format strings with pipes)
+    for I := 0 to High(Options) do
+      GitProcess.Parameters.Add(Options[I]);
+    
+    GitProcess.Options := [poUsePipes, poStderrToOutPut];
+    
+    try
+      GitProcess.Execute;
+      
+      // Read all output
+      OutputStr := '';
+      while GitProcess.Running do
+      begin
+        if GitProcess.Output.NumBytesAvailable > 0 then
+        begin
+          BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
+          if BytesRead > 0 then
+            OutputStr := OutputStr + Copy(string(Buffer), 1, BytesRead);
+        end;
+        Sleep(10);
+      end;
+      
+      // Read any remaining output
+      while GitProcess.Output.NumBytesAvailable > 0 do
+      begin
+        BytesRead := GitProcess.Output.Read(Buffer, SizeOf(Buffer));
+        if BytesRead > 0 then
+          OutputStr := OutputStr + Copy(string(Buffer), 1, BytesRead);
+      end;
+      
+      GitProcess.WaitOnExit;
+      
+      Result.ExitCode := GitProcess.ExitStatus;
+      Result.Success := GitProcess.ExitStatus = 0;
+      
+      if Result.Success then
+        Result.Output := Trim(OutputStr)
+      else
+        Result.ErrorMessage := Trim(OutputStr);
+        
+    except
+      on E: Exception do
+      begin
+        Result.ErrorMessage := 'Git execution error: ' + E.Message;
+        Result.ExitCode := -1;
+      end;
+    end;
+  finally
+    GitProcess.Free;
+  end;
+end;
+
+class function TGitRepository.GetCommitInfo(const Hash: string): TGitResult;
+begin
+  if not ValidateGitReference(Hash) then
+  begin
+    Result.Success := False;
+    Result.ErrorMessage := 'Invalid commit hash provided';
+    Result.ExitCode := -1;
+    Exit;
+  end;
+  
+  // Get commit info with format: hash, subject, author, date
+  Result := Execute(['show', '--no-patch', '--format=%H|%s|%an|%ad', '--date=relative', Hash]);
+end;
+
+class function TGitRepository.Reset(const Target: string; const Mode: string): TGitResult;
+var
+  Args: array of string;
+begin
+  if not ValidateGitReference(Target) then
+  begin
+    Result.Success := False;
+    Result.ErrorMessage := 'Invalid reset target provided';
+    Result.ExitCode := -1;
+    Exit;
+  end;
+  
+  if Mode = '' then
+  begin
+    // Default reset (mixed)
+    SetLength(Args, 2);
+    Args[0] := 'reset';
+    Args[1] := Target;
+  end
+  else
+  begin
+    // Validate mode
+    if not ((Mode = '--hard') or (Mode = '--soft') or (Mode = '--mixed')) then
+    begin
+      Result.Success := False;
+      Result.ErrorMessage := 'Invalid reset mode. Use --hard, --soft, or --mixed';
+      Result.ExitCode := -1;
+      Exit;
+    end;
+    
+    SetLength(Args, 3);
+    Args[0] := 'reset';
+    Args[1] := Mode;
+    Args[2] := Target;
+  end;
+  
+  Result := Execute(Args);
+end;
+
+class function TGitRepository.CreateBranch(const Name: string; const StartPoint: string): TGitResult;
+var
+  Args: array of string;
+begin
+  if Trim(Name) = '' then
+  begin
+    Result.Success := False;
+    Result.ErrorMessage := 'Branch name cannot be empty';
+    Result.ExitCode := -1;
+    Exit;
+  end;
+  
+  // Sanitize branch name
+  if (Pos('/', Name) > 0) or (Pos('\', Name) > 0) or (Pos(' ', Name) > 0) then
+  begin
+    Result.Success := False;
+    Result.ErrorMessage := 'Branch name contains invalid characters';
+    Result.ExitCode := -1;
+    Exit;
+  end;
+  
+  if StartPoint = '' then
+  begin
+    SetLength(Args, 2);
+    Args[0] := 'branch';
+    Args[1] := Name;
+  end
+  else
+  begin
+    if not ValidateGitReference(StartPoint) then
+    begin
+      Result.Success := False;
+      Result.ErrorMessage := 'Invalid start point provided';
+      Result.ExitCode := -1;
+      Exit;
+    end;
+    
+    SetLength(Args, 3);
+    Args[0] := 'branch';
+    Args[1] := Name;
+    Args[2] := StartPoint;
+  end;
+  
+  Result := Execute(Args);
+end;
+
+class function TGitRepository.CheckoutBranch(const Name: string): TGitResult;
+begin
+  if Trim(Name) = '' then
+  begin
+    Result.Success := False;
+    Result.ErrorMessage := 'Branch name cannot be empty';
+    Result.ExitCode := -1;
+    Exit;
+  end;
+  
+  // Sanitize branch name
+  if (Pos('/', Name) > 0) or (Pos('\', Name) > 0) or (Pos(' ', Name) > 0) then
+  begin
+    Result.Success := False;
+    Result.ErrorMessage := 'Branch name contains invalid characters';
+    Result.ExitCode := -1;
+    Exit;
+  end;
+  
+  Result := Execute(['checkout', Name]);
 end;
 
 end.
