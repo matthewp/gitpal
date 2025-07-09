@@ -11,6 +11,7 @@ uses
   command_changelog,
   command_setup,
   command_undo,
+  command_recover,
   config_manager;
 
 const
@@ -47,6 +48,7 @@ begin
   writeln('  commit       Generate and apply AI-powered commit messages');
   writeln('  changelog    Update CHANGELOG.md with recent changes');
   writeln('  undo         Interactively undo recent git operations');
+  writeln('  recover      Find and restore lost commits and work');
   writeln('');
   writeln('Options:');
   writeln('  --help, -h     Show this help message');
@@ -140,6 +142,34 @@ begin
   writeln('  gitpal undo --prompt "lost my work on login feature"');
 end;
 
+procedure ShowRecoverHelp;
+begin
+  writeln('gitpal recover - Find and restore lost commits and work');
+  writeln('');
+  writeln('Usage:');
+  writeln('  gitpal recover [options]');
+  writeln('');
+  writeln('Description:');
+  writeln('  Searches for orphaned commits that are no longer reachable from any');
+  writeln('  branch and provides an interactive interface to recover lost work.');
+  writeln('  Uses AI to group related commits and suggest recovery strategies.');
+  writeln('');
+  writeln('Options:');
+  writeln('  --prompt <text>      Describe what you''re looking for (e.g., "user auth")');
+  writeln('  --provider <name>    Override default provider (openai, claude, gemini)');
+  writeln('  --help, -h           Show this help message');
+  writeln('');
+  writeln('Examples:');
+  writeln('  gitpal recover');
+  writeln('  gitpal recover --prompt "lost my work on user authentication"');
+  writeln('  gitpal recover --prompt "OAuth integration feature"');
+  writeln('');
+  writeln('Recovery Options:');
+  writeln('  • Create new branch with recovered commits');
+  writeln('  • Cherry-pick specific commits to current branch');
+  writeln('  • Show diffs to examine lost work before recovery');
+end;
+
 var
   Command: string;
   CustomPrompt: string;
@@ -190,6 +220,11 @@ begin
         else if Command = AnsiString('undo') then
         begin
           ShowUndoHelp;
+          Exit;
+        end
+        else if Command = AnsiString('recover') then
+        begin
+          ShowRecoverHelp;
           Exit;
         end;
         Break;
@@ -295,6 +330,11 @@ begin
   else if Command = AnsiString('undo') then
   begin
     RunUndoCommand(CustomPrompt);
+  end
+  else if Command = AnsiString('recover') then
+  begin
+    if EnsureConfigurationExists then
+      RunRecoverCommand(CustomPrompt, ProviderOverride);
   end
   else
   begin

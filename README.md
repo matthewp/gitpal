@@ -8,6 +8,7 @@ An AI-powered git assistant CLI tool written in Pascal that analyzes your git ch
 
 - **AI-powered commit messages**: Analyzes staged changes and generates descriptive commit messages with real-time streaming
 - **Interactive git undo**: Safely recover from git mistakes with AI-assisted operation analysis and automated backup creation
+- **Orphaned commit recovery**: Find and restore lost commits that are no longer reachable from any branch
 - **Interactive setup wizard**: Configure providers, API keys, and models with an intuitive TUI
 - **Automated changelog generation**: Update CHANGELOG.md with AI-generated summaries from git history
 - **Multiple LLM support**: Choose from OpenAI (GPT-4, GPT-3.5), Anthropic Claude (Sonnet, Haiku), or Google Gemini models
@@ -189,6 +190,44 @@ gitpal undo --provider claude
 - AI-powered explanations of what each operation will do
 - Requires confirmation for all recovery operations
 
+### Recovering Orphaned Commits
+
+```bash
+# Find and recover commits that are no longer reachable from any branch
+gitpal recover
+
+# Describe what you're looking for to help AI group related commits
+gitpal recover --prompt "lost my work on user authentication"
+
+# Use a specific provider for commit analysis
+gitpal recover --provider claude
+```
+
+**What gitpal recover can help with:**
+- Commits lost during force pushes or branch deletions
+- Work that got "lost" during complex rebases or merges
+- Experiments that were discarded but are now needed
+- Commits from deleted branches that contain valuable work
+- Orphaned commits from interrupted git operations
+
+**Recovery process:**
+1. **Analysis**: Scans git reflog to find orphaned commits
+2. **AI Grouping**: Groups related commits into logical units
+3. **Plan Generation**: Creates detailed recovery plan with git commands
+4. **User Confirmation**: Shows exactly what will happen before execution
+5. **Safe Execution**: Creates backup branches and executes recovery
+
+**Recovery options:**
+- **Create new branch**: Recover commits to a new branch for safe inspection
+- **Cherry-pick to current**: Apply commits directly to your current branch
+- **Show diffs**: Examine the actual code changes before deciding
+
+**Safety features:**
+- Automatic backup branches created before any changes
+- Detailed preview of all git commands that will be executed
+- Cherry-pick conflict handling with automatic rollback
+- AI-powered risk assessment and impact analysis
+
 ### Global Options
 
 ```bash
@@ -196,6 +235,7 @@ gitpal undo --provider claude
 gitpal --help
 gitpal commit --help
 gitpal undo --help
+gitpal recover --help
 
 # Show version
 gitpal --version
@@ -259,6 +299,15 @@ When recovering from git mistakes:
 - **Risk indicators** - Color-coded safety levels for each operation
 - **Detailed previews** - Shows exactly what each undo will do
 
+### Recover Interface
+When recovering orphaned commits:
+- **Arrow keys** or **j/k** - Navigate between commit groups or confirmation options
+- **Enter** - Select commit group or confirm action
+- **q** - Cancel and exit
+- **Real-time progress** - Shows reflog analysis, AI grouping, and plan generation
+- **Detailed recovery plans** - Shows exact git commands and expected outcomes
+- **Three-option confirmation** - Accept, Decline, or Show diffs before execution
+
 ### Editor Integration
 gitpal respects your environment's editor settings:
 - Uses `$EDITOR` or `$VISUAL` environment variables
@@ -284,7 +333,8 @@ src/
 ├── gitpal.pas           # Main CLI entry point
 ├── command_commit.pas   # Commit message generation
 ├── command_changelog.pas # Changelog generation
-└── command_undo.pas     # Interactive git mistake recovery
+├── command_undo.pas     # Interactive git mistake recovery
+└── command_recover.pas  # Orphaned commit recovery
 
 vendor/
 ├── bobaui/             # TUI framework
@@ -325,6 +375,13 @@ If the edit feature doesn't work:
 - **"No reflog entries found"**: Repository might be new or reflog might be disabled
 - **"Operation not found"**: The operation you're looking for might be too old (only shows recent 50 entries)
 - **Authentication errors**: Ensure your AI provider is configured with `gitpal setup`
+
+#### Recover Command Issues
+- **"No orphaned commits found"**: All commits are reachable from existing branches
+- **"Cherry-pick conflicts"**: Resolved automatically with rollback to original state
+- **"Branch creation failed"**: Ensure you have permission to create branches
+- **"Backup branch exists"**: Previous backup branch exists, will use timestamped name
+- **"Git repository not found"**: Run the command from within a git repository
 
 ## Contributing
 
