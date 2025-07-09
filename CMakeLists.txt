@@ -54,6 +54,7 @@ set(GITPAL_SOURCES
     src/command_setup.pas
     src/command_undo.pas
     src/command_recover.pas
+    src/command_explain.pas
     src/git.pas
     src/gitpal_auth.pas
     src/oauth_client.pas

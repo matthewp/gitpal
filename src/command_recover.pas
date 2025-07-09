@@ -828,12 +828,12 @@ begin
   begin
     SetLength(Sections, Length(Sections) + 2);
     Sections[High(Sections) - 1] := AnsiString('');
-    Sections[High(Sections)] := bobastyle.ColorText('⚠️  Warnings:', bobastyle.cBrightYellow);
+    Sections[High(Sections)] := bobastyle.ColorText(AnsiString('⚠️  Warnings:'), bobastyle.cBrightYellow);
     
     for i := 0 to High(Plan.RiskWarnings) do
     begin
       SetLength(Sections, Length(Sections) + 1);
-      WarningText := '• ' + Plan.RiskWarnings[i];
+      WarningText := AnsiString('• ') + Plan.RiskWarnings[i];
       Sections[High(Sections)] := bobastyle.ColorText(WarningText, bobastyle.cBrightYellow);
     end;
   end;

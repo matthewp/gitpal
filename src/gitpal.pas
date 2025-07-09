@@ -12,6 +12,7 @@ uses
   command_setup,
   command_undo,
   command_recover,
+  command_explain,
   config_manager;
 
 const
@@ -49,6 +50,7 @@ begin
   writeln('  changelog    Update CHANGELOG.md with recent changes');
   writeln('  undo         Interactively undo recent git operations');
   writeln('  recover      Find and restore lost commits and work');
+  writeln('  explain      Understand what happened during git operations');
   writeln('');
   writeln('Options:');
   writeln('  --help, -h     Show this help message');
@@ -165,9 +167,35 @@ begin
   writeln('  gitpal recover --prompt "OAuth integration feature"');
   writeln('');
   writeln('Recovery Options:');
-  writeln('  • Create new branch with recovered commits');
-  writeln('  • Cherry-pick specific commits to current branch');
-  writeln('  • Show diffs to examine lost work before recovery');
+  writeln(AnsiString('  • Create new branch with recovered commits'));
+  writeln(AnsiString('  • Cherry-pick specific commits to current branch'));
+  writeln(AnsiString('  • Show diffs to examine lost work before recovery'));
+end;
+
+procedure ShowExplainHelp;
+begin
+  writeln('gitpal explain - Understand what happened during git operations');
+  writeln('');
+  writeln('Usage:');
+  writeln('  gitpal explain [options]');
+  writeln('');
+  writeln('Description:');
+  writeln('  Analyzes recent git operations and provides AI-powered explanations');
+  writeln('  of what changed and why. Helps understand the impact of complex');
+  writeln('  operations like rebases, merges, and resets.');
+  writeln('');
+  writeln('Options:');
+  writeln('  --provider <name>    Override default provider (openai, claude, gemini)');
+  writeln('  --help, -h           Show this help message');
+  writeln('');
+  writeln('Examples:');
+  writeln('  gitpal explain');
+  writeln('  gitpal explain --provider claude');
+  writeln('');
+  writeln('Output includes:');
+  writeln(AnsiString('  • Before/after analysis of recent operations'));
+  writeln(AnsiString('  • Explanation of what changed and why'));
+  writeln(AnsiString('  • Context for complex multi-step operations'));
 end;
 
 var
@@ -225,6 +253,11 @@ begin
         else if Command = AnsiString('recover') then
         begin
           ShowRecoverHelp;
+          Exit;
+        end
+        else if Command = AnsiString('explain') then
+        begin
+          ShowExplainHelp;
           Exit;
         end;
         Break;
@@ -335,6 +368,11 @@ begin
   begin
     if EnsureConfigurationExists then
       RunRecoverCommand(CustomPrompt, ProviderOverride);
+  end
+  else if Command = AnsiString('explain') then
+  begin
+    if EnsureConfigurationExists then
+      RunExplainCommand(ProviderOverride);
   end
   else
   begin
