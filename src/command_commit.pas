@@ -441,20 +441,10 @@ begin
     DebugLog('[StreamCallback] Streaming finished, total message length: ' + IntToStr(Length(FCommitMessage)));
     DebugLog('[StreamCallback] Final message content: ' + FCommitMessage);
     
-    // Check for various error patterns
-    if (Pos('Error:', FCommitMessage) = 1) or 
-       (Length(FCommitMessage) = 0) then
+    // Check for empty response (only real error case in streaming)
+    if Length(FCommitMessage) = 0 then
     begin
-      if Length(FCommitMessage) = 0 then
-      begin
-        // Check if the last chunk was an error message
-        if (AChunk <> '') and (Pos('Error:', AChunk) = 1) then
-          FStreamingError := AChunk
-        else
-          FStreamingError := 'Empty response from API';
-      end
-      else
-        FStreamingError := FCommitMessage;
+      FStreamingError := 'Empty response from API';
       DebugLog('[StreamCallback] Error detected: ' + FStreamingError);
     end;
   end
@@ -1339,7 +1329,7 @@ begin
         on E: Exception do
         begin
           DebugLog('[GenerateCommitMessageStream] Exception caught: ' + E.ClassName + ': ' + E.Message);
-          ACallback('Error: ' + E.Message, True);
+          raise; // Re-raise the exception instead of calling callback with error
         end;
       end;
         
