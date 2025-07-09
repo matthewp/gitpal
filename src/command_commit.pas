@@ -443,7 +443,6 @@ begin
     
     // Check for various error patterns
     if (Pos('Error:', FCommitMessage) = 1) or 
-       (Pos('error', LowerCase(FCommitMessage)) > 0) or
        (Length(FCommitMessage) = 0) then
     begin
       if Length(FCommitMessage) = 0 then
