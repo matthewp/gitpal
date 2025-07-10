@@ -19,23 +19,26 @@ list(APPEND FPC_FLAGS
 )
 
 # Find OpenSSL 1.1.x specifically
-# On macOS with Homebrew, OpenSSL 1.1 is keg-only, so we need to help CMake find it
+# Use CMAKE_PREFIX_PATH instead of OPENSSL_ROOT_DIR for better find_package behavior
 if(APPLE)
-    # Try both Intel and Apple Silicon Homebrew paths
-    if(EXISTS "/opt/homebrew/opt/openssl@1.1")
-        set(OPENSSL_ROOT_DIR /opt/homebrew/opt/openssl@1.1)
-    elseif(EXISTS "/usr/local/opt/openssl@1.1")
-        set(OPENSSL_ROOT_DIR /usr/local/opt/openssl@1.1)
-    endif()
-elseif(CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
-    # FreeBSD typically installs OpenSSL 1.1 in /usr/local
-    set(OPENSSL_ROOT_DIR /usr/local)
+    # macOS: Use Homebrew OpenSSL 1.1 (keg-only)
+    set(CMAKE_PREFIX_PATH "/opt/homebrew/opt/openssl@1.1;/usr/local/opt/openssl@1.1" ${CMAKE_PREFIX_PATH})
+elseif(WIN32)
+    # Windows: Add common OpenSSL installation paths
+    set(CMAKE_PREFIX_PATH "C:/Program Files/OpenSSL;C:/Program Files/OpenSSL-Win64" ${CMAKE_PREFIX_PATH})
 endif()
 
-find_package(OpenSSL 1.1 REQUIRED COMPONENTS Crypto SSL)
+# Debug: Show CMAKE_PREFIX_PATH before find_package
+message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
+
+# Find OpenSSL using modern CMake approach
+find_package(OpenSSL 1.1 REQUIRED)
 
 # Debug: Show what OpenSSL CMake found (can be removed later)
-message(STATUS "Found OpenSSL ${OPENSSL_VERSION} at ${OPENSSL_LIB_DIR}")
+message(STATUS "Found OpenSSL ${OPENSSL_VERSION}")
+message(STATUS "OPENSSL_INCLUDE_DIR: ${OPENSSL_INCLUDE_DIR}")
+message(STATUS "OPENSSL_CRYPTO_LIBRARY: ${OPENSSL_CRYPTO_LIBRARY}")
+message(STATUS "OPENSSL_SSL_LIBRARY: ${OPENSSL_SSL_LIBRARY}")
 
 # Add OpenSSL library paths and linking flags for FPC
 get_filename_component(OPENSSL_LIB_DIR "${OPENSSL_CRYPTO_LIBRARY}" DIRECTORY)
