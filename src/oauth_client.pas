@@ -37,7 +37,7 @@ type
 const
   // Google OAuth 2.0 configuration (from gemini-cli)
   GOOGLE_OAUTH_CLIENT_ID = '681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com';
-  GOOGLE_OAUTH_CLIENT_SECRET = 'PLACEHOLDER_SECRET';
+  GOOGLE_OAUTH_CLIENT_SECRET = ''; // Public client - no secret needed for PKCE
   GOOGLE_OAUTH_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
   GOOGLE_OAUTH_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
   GOOGLE_OAUTH_TOKEN_INFO_ENDPOINT = 'https://oauth2.googleapis.com/tokeninfo';
@@ -65,7 +65,7 @@ begin
   inherited Create;
   FHttpClient := TFPHTTPClient.Create(nil);
   FHttpClient.AllowRedirect := True;
-  FHttpClient.AddHeader('User-Agent', 'GitPal-OAuth-Client/1.0');
+  FHttpClient.AddHeader('User-Agent', 'gitpal-OAuth-Client/1.0');
 end;
 
 destructor TOAuthClient.Destroy;
