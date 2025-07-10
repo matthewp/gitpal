@@ -11,19 +11,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: linux-x86_64
-            
-          - os: macos-12
-            target: darwin-x86_64
             
           - os: macos-14
             target: darwin-arm64
             
-          - os: windows-2022
-            target: windows-x86_64
+          # TODO: Fix Windows build - FreePascal PATH issues
+          # - os: windows-2022
+          #   target: windows-x86_64
             
-          - os: ubuntu-20.04
+          - os: ubuntu-22.04
             target: freebsd-x86_64
             use-cross-platform-actions: true
     
@@ -39,37 +37,28 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libssl-dev
-          
-          # Install FreePascal from official package
-          wget -O - https://www.freepascal.org/keys/key.asc | gpg --dearmor | sudo tee /usr/share/keyrings/freepascal-keyring.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/freepascal-keyring.gpg] https://www.freepascal.org/packages/ubuntu jammy main" | sudo tee /etc/apt/sources.list.d/freepascal.list
-          sudo apt-get update
-          sudo apt-get install -y fpc
+          sudo apt-get install -y cmake libssl-dev fpc
           
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install fpc cmake openssl@1.1
           
-      - name: Install Dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          # Download and install FreePascal
-          Invoke-WebRequest -Uri "https://downloads.freepascal.org/fpc/dist/3.2.2/i386-win32/fpc-3.2.2.i386-win32.exe" -OutFile "fpc-installer.exe"
-          Start-Process -FilePath "fpc-installer.exe" -ArgumentList "/SILENT" -Wait
-          
-          # Download OpenSSL 1.1 binaries
-          Invoke-WebRequest -Uri "https://slproweb.com/download/Win64OpenSSL_Light-1_1_1w.exe" -OutFile "openssl-installer.exe"
-          Start-Process -FilePath "openssl-installer.exe" -ArgumentList "/SILENT" -Wait
+      # TODO: Re-enable Windows build once FreePascal PATH issues are resolved
+      # - name: Install Dependencies (Windows)
+      #   if: runner.os == 'Windows'
+      #   run: |
+      #     choco install lazarus -y
+      #     choco install openssl --version=1.1.1.2100 -y
+      #     Start-Process -FilePath "C:\ProgramData\chocolatey\lib\openssl\tools\Win64OpenSSL-1_1_1u.exe" -ArgumentList "/SILENT" -Wait
           
       - name: Build (FreeBSD)
         if: matrix.target == 'freebsd-x86_64'
-        uses: cross-platform-actions/action@v0.21.1
+        uses: cross-platform-actions/action@master
         with:
           operating_system: freebsd
           architecture: x86-64
-          version: '13.2'
+          version: '14.3'
           shell: bash
           run: |
             # Install FreePascal and dependencies using pkg
@@ -87,7 +76,7 @@ jobs:
             # Bundle OpenSSL libraries
             ldd bin/gitpal | grep -E "libssl|libcrypto" | awk '{print $3}' | xargs -I {} cp {} dist/ || true
           
-      - name: Build (Non-FreeBSD)
+      - name: Build
         if: matrix.target != 'freebsd-x86_64'
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -108,11 +97,11 @@ jobs:
             # Set rpath for Homebrew OpenSSL
             install_name_tool -add_rpath /opt/homebrew/opt/openssl@1.1/lib dist/gitpal-${{ matrix.target }} 2>/dev/null || true
             install_name_tool -add_rpath /usr/local/opt/openssl@1.1/lib dist/gitpal-${{ matrix.target }} 2>/dev/null || true
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            cp bin/gitpal.exe dist/gitpal-windows-x86_64.exe
-            # Bundle OpenSSL DLLs
-            cp "C:/Program Files/OpenSSL-Win64/bin/libssl-1_1-x64.dll" dist/
-            cp "C:/Program Files/OpenSSL-Win64/bin/libcrypto-1_1-x64.dll" dist/
+          # TODO: Re-enable Windows packaging
+          # elif [ "$RUNNER_OS" == "Windows" ]; then
+          #   cp bin/gitpal.exe dist/gitpal-windows-x86_64.exe
+          #   cp "C:/Program Files/OpenSSL/bin/libssl-1_1-x64.dll" dist/
+          #   cp "C:/Program Files/OpenSSL/bin/libcrypto-1_1-x64.dll" dist/
           fi
           
       - name: Upload Artifacts
@@ -142,14 +131,13 @@ jobs:
             # Find the binary file in each artifact directory
             if [ -f "$dir/gitpal-linux-x86_64" ]; then
               cp "$dir/gitpal-linux-x86_64" "release/"
-            elif [ -f "$dir/gitpal-darwin-x86_64" ]; then
-              cp "$dir/gitpal-darwin-x86_64" "release/"
             elif [ -f "$dir/gitpal-darwin-arm64" ]; then
               cp "$dir/gitpal-darwin-arm64" "release/"
-            elif [ -f "$dir/gitpal-windows-x86_64.exe" ]; then
-              cp "$dir/gitpal-windows-x86_64.exe" "release/"
-              # Also copy Windows DLLs
-              cp "$dir/"*.dll "release/" 2>/dev/null || true
+            # TODO: Re-enable Windows release assets
+            # elif [ -f "$dir/gitpal-windows-x86_64.exe" ]; then
+            #   cp "$dir/gitpal-windows-x86_64.exe" "release/"
+            #   # Also copy Windows DLLs
+            #   cp "$dir/"*.dll "release/" 2>/dev/null || true
             elif [ -f "$dir/gitpal-freebsd-x86_64" ]; then
               cp "$dir/gitpal-freebsd-x86_64" "release/"
               # Also copy FreeBSD shared libraries
@@ -173,17 +161,17 @@ jobs:
             
             ## Downloads
             - **Linux**: `gitpal-linux-x86_64`
-            - **macOS (Intel)**: `gitpal-darwin-x86_64`
             - **macOS (Apple Silicon)**: `gitpal-darwin-arm64`
             - **FreeBSD**: `gitpal-freebsd-x86_64`
-            - **Windows**: `gitpal-windows-x86_64.exe` (includes required DLLs)
+            <!-- TODO: Re-enable Windows builds -->
+            <!-- - **Windows**: `gitpal-windows-x86_64.exe` (includes required DLLs) -->
             
             ## Installation
             
             ### Linux/macOS/FreeBSD
             ```bash
             # Download the appropriate binary
-            wget https://github.com/yourusername/gitpal/releases/download/${{ github.ref_name }}/gitpal-linux-x86_64
+            wget https://github.com/matthewp/gitpal/releases/download/${{ github.ref_name }}/gitpal-linux-x86_64
             
             # Make executable
             chmod +x gitpal-linux-x86_64
