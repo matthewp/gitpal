@@ -27,6 +27,9 @@ if(APPLE)
     elseif(EXISTS "/usr/local/opt/openssl@1.1")
         set(OPENSSL_ROOT_DIR /usr/local/opt/openssl@1.1)
     endif()
+elseif(CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
+    # FreeBSD typically installs OpenSSL 1.1 in /usr/local
+    set(OPENSSL_ROOT_DIR /usr/local)
 endif()
 
 find_package(OpenSSL 1.1 REQUIRED COMPONENTS Crypto SSL)
